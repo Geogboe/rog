@@ -40,6 +40,16 @@ func TestDetectLanguage(t *testing.T) {
 			expected: "Python",
 		},
 		{
+			name:     "Python project with Makefile (Python should win)",
+			files:    []string{"requirements.txt", "Makefile", "main.py", "utils.py"},
+			expected: "Python",
+		},
+		{
+			name:     "Python project with setup.py and Makefile",
+			files:    []string{"setup.py", "Makefile", "app.py", "test.py"},
+			expected: "Python",
+		},
+		{
 			name:     "TypeScript by extension count",
 			files:    []string{"index.ts", "app.ts", "utils.ts", "types.ts"},
 			expected: "TypeScript",
