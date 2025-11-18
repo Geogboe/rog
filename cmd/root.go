@@ -50,6 +50,16 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 	rootCmd.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug logging (more verbose than --verbose)")
 
+	// Make completion command visible in help
+	// Cobra adds it automatically but hides it by default
+	rootCmd.InitDefaultCompletionCmd()
+	for _, cmd := range rootCmd.Commands() {
+		if cmd.Name() == "completion" {
+			cmd.Hidden = false
+			break
+		}
+	}
+
 	// Add meta subcommand
 	rootCmd.AddCommand(meta.MetaCmd)
 }
