@@ -8,8 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/query"
+)
+
+var (
+	selectOpen bool
 )
 
 var selectCmd = &cobra.Command{
@@ -43,6 +48,7 @@ func init() {
 	selectCmd.Flags().BoolVar(&listBehind, "behind", false, "Show only repos behind")
 	selectCmd.Flags().StringVar(&listSort, "sort", "name", "Sort by: name, last-commit, path, last-scan")
 	selectCmd.Flags().IntVar(&listLimit, "limit", 0, "Limit results")
+	selectCmd.Flags().BoolVar(&selectOpen, "open", false, "Open selected repository in editor")
 }
 
 func runSelect(cmd *cobra.Command, args []string) {
@@ -93,6 +99,10 @@ func runSelect(cmd *cobra.Command, args []string) {
 
 	// If only one result, return it
 	if len(results) == 1 {
+		if selectOpen {
+			openInEditor(results[0])
+			return
+		}
 		fmt.Println(results[0].AbsPath)
 		return
 	}
@@ -101,7 +111,11 @@ func runSelect(cmd *cobra.Command, args []string) {
 	if hasFzf() {
 		selected := selectWithFzf(results)
 		if selected != nil {
-			fmt.Println(selected.AbsPath)
+			if selectOpen {
+				openInEditor(selected)
+			} else {
+				fmt.Println(selected.AbsPath)
+			}
 		}
 	} else {
 		// Fallback: just list them
@@ -120,11 +134,21 @@ func selectWithFzf(repos []*index.Repo) *index.Repo {
 	// Build input for fzf
 	var lines []string
 	for _, repo := range repos {
-		line := fmt.Sprintf("%s\t%s\t%s/%s",
+		// Truncate description to 50 chars for select
+		desc := repo.Description
+		if len(desc) > 50 {
+			desc = desc[:47] + "..."
+		}
+		if desc == "" {
+			desc = "-"
+		}
+
+		line := fmt.Sprintf("%s\t%s\t%s/%s\t%s",
 			repo.Name,
 			repo.PrimaryLanguage,
 			repo.Root,
 			repo.RelPath,
+			desc,
 		)
 		lines = append(lines, line)
 	}
@@ -137,7 +161,7 @@ func selectWithFzf(repos []*index.Repo) *index.Repo {
 		"--reverse",
 		"--header=Select a repository",
 		"--delimiter=\t",
-		"--with-nth=1,2,3",
+		"--with-nth=1,2,3,4",
 	)
 
 	cmd.Stdin = strings.NewReader(input)
@@ -170,4 +194,35 @@ func selectWithFzf(repos []*index.Repo) *index.Repo {
 	}
 
 	return nil
+}
+
+func openInEditor(repo *index.Repo) {
+	// Load config to get editor
+	cfg, err := config.Load()
+	if err != nil {
+		exitWithError("Failed to load config: %v", err)
+	}
+
+	editor := cfg.Editor
+	if editor == "" {
+		// Fall back to environment variables
+		editor = os.Getenv("EDITOR")
+		if editor == "" {
+			editor = os.Getenv("VISUAL")
+			if editor == "" {
+				editor = "vim" // Last resort default
+			}
+		}
+	}
+
+	// Open editor in the repo directory
+	cmd := exec.Command(editor, ".")
+	cmd.Dir = repo.AbsPath
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		exitWithError("Failed to open editor: %v", err)
+	}
 }
