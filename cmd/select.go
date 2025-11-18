@@ -131,7 +131,7 @@ func hasFzf() bool {
 }
 
 func selectWithFzf(repos []*index.Repo) *index.Repo {
-	// Build input for fzf
+	// Build input for fzf with aligned columns
 	var lines []string
 	for _, repo := range repos {
 		// Truncate description to 50 chars for select
@@ -143,25 +143,18 @@ func selectWithFzf(repos []*index.Repo) *index.Repo {
 			desc = "-"
 		}
 
-		line := fmt.Sprintf("%s\t%s\t%s/%s\t%s",
-			repo.Name,
-			repo.PrimaryLanguage,
-			repo.Root,
-			repo.RelPath,
-			desc,
-		)
+		line := formatSelectLine(repo, desc)
 		lines = append(lines, line)
 	}
 
 	input := strings.Join(lines, "\n")
 
-	// Run fzf
+	// Run fzf (no delimiter needed with space-separated columns)
 	cmd := exec.Command("fzf",
 		"--height=40%",
 		"--reverse",
 		"--header=Select a repository",
-		"--delimiter=\t",
-		"--with-nth=1,2,3,4",
+		"--ansi",
 	)
 
 	cmd.Stdin = strings.NewReader(input)
@@ -178,15 +171,11 @@ func selectWithFzf(repos []*index.Repo) *index.Repo {
 		return nil
 	}
 
-	// Extract repo name from selection
-	parts := strings.Split(selected, "\t")
-	if len(parts) == 0 {
-		return nil
-	}
+	// Extract repo name from selection (first field up to first double-space)
+	// The format is: "name  lang  path  description"
+	name := strings.TrimSpace(strings.Split(selected, "  ")[0])
 
-	name := parts[0]
-
-	// Find the repo
+	// Find the repo by name
 	for _, repo := range repos {
 		if repo.Name == name {
 			return repo
@@ -194,6 +183,36 @@ func selectWithFzf(repos []*index.Repo) *index.Repo {
 	}
 
 	return nil
+}
+
+// formatSelectLine formats a repository for display in fzf with aligned columns
+func formatSelectLine(repo *index.Repo, desc string) string {
+	lang := repo.PrimaryLanguage
+	if lang == "" {
+		lang = "unknown"
+	}
+
+	path := repo.Root + "/" + repo.RelPath
+
+	// Use fixed-width formatting for aligned columns
+	// Name: 30 chars, Language: 12 chars, Path: 40 chars, Description: remaining
+	return fmt.Sprintf("%-30s  %-12s  %-40s  %s",
+		truncateString(repo.Name, 30),
+		truncateString(lang, 12),
+		truncateString(path, 40),
+		desc,
+	)
+}
+
+// truncateString truncates a string to maxLen, preserving it if shorter
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func openInEditor(repo *index.Repo) {
