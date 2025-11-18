@@ -40,12 +40,20 @@ Flags:
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	scanCmd.Flags().BoolVar(&scanRemote, "remote", false, "Check remote status (ahead/behind)")
-	scanCmd.Flags().BoolVar(&scanLLM, "llm", false, "Use LLM to enrich metadata")
-	scanCmd.Flags().BoolVar(&scanRefreshMeta, "refresh-meta", false, "Refresh LLM-generated metadata")
+	scanCmd.Flags().BoolVar(&scanLLM, "llm", false, "Use LLM to enrich metadata (use with --refresh-meta to update existing LLM metadata)")
+
+	// --refresh-meta is only applicable with --llm, so mark it as hidden
+	scanCmd.Flags().BoolVar(&scanRefreshMeta, "refresh-meta", false, "Refresh LLM-generated metadata (requires --llm)")
+	scanCmd.Flags().MarkHidden("refresh-meta")
 }
 
 func runScan(cmd *cobra.Command, args []string) {
 	start := time.Now()
+
+	// Validate flag combinations
+	if scanRefreshMeta && !scanLLM {
+		exitWithError("--refresh-meta requires --llm")
+	}
 
 	// Load config
 	cfg, err := config.Load()

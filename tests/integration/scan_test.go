@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -307,7 +308,7 @@ func TestScanStress(t *testing.T) {
 
 	// Create 50 repos
 	for i := 0; i < 50; i++ {
-		repoDir := filepath.Join(tmpDir, "repo-"+string(rune(i)))
+		repoDir := filepath.Join(tmpDir, "repo-"+strconv.Itoa(i))
 		os.MkdirAll(repoDir, 0755)
 		initGitRepo(t, repoDir)
 

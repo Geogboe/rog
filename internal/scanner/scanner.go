@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
 	"log"
@@ -188,6 +189,9 @@ func (s *Scanner) processRepo(repoPath string) error {
 	// Detect language
 	repo.PrimaryLanguage = DetectLanguage(repoPath)
 
+	// Extract README description as fallback
+	readmeDesc := extractReadmeDescription(repoPath)
+
 	// Read metadata
 	repoMeta, _ := metadata.ReadRepoMeta(repoPath)
 	globalMeta := metadata.FindGlobalMeta(s.globalMeta, root, relPath)
@@ -213,6 +217,10 @@ func (s *Scanner) processRepo(repoPath string) error {
 		} else if globalMeta != nil && globalMeta.Description != "" {
 			repo.DescriptionSource = "global"
 		}
+	} else if readmeDesc != "" {
+		// Use README description as fallback
+		repo.Description = readmeDesc
+		repo.DescriptionSource = "readme"
 	}
 
 	if len(mergedMeta.Tags) > 0 {
@@ -247,4 +255,81 @@ func (s *Scanner) findRoot(repoPath string) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// extractReadmeDescription extracts a description from README.md
+// It reads the first non-header line and returns either the first sentence
+// or truncates to ~140 characters
+func extractReadmeDescription(repoPath string) string {
+	// Try common README file names
+	readmeNames := []string{"README.md", "README.MD", "Readme.md", "readme.md", "README"}
+
+	var readmePath string
+	for _, name := range readmeNames {
+		path := filepath.Join(repoPath, name)
+		if _, err := os.Stat(path); err == nil {
+			readmePath = path
+			break
+		}
+	}
+
+	if readmePath == "" {
+		return ""
+	}
+
+	file, err := os.Open(readmePath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Skip markdown headers (lines starting with #)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Skip HTML comments
+		if strings.HasPrefix(line, "<!--") {
+			continue
+		}
+
+		// Skip badges and images
+		if strings.HasPrefix(line, "[![") || strings.HasPrefix(line, "![") {
+			continue
+		}
+
+		// Found first real content line
+		desc := line
+
+		// Try to extract first sentence (up to first period followed by space or end)
+		if idx := strings.Index(desc, ". "); idx != -1 {
+			desc = desc[:idx+1]
+		} else if idx := strings.Index(desc, ".\n"); idx != -1 {
+			desc = desc[:idx+1]
+		}
+
+		// Truncate to ~140 chars if still too long
+		const maxLength = 140
+		if len(desc) > maxLength {
+			// Try to cut at word boundary
+			if idx := strings.LastIndex(desc[:maxLength], " "); idx != -1 {
+				desc = desc[:idx] + "..."
+			} else {
+				desc = desc[:maxLength] + "..."
+			}
+		}
+
+		return desc
+	}
+
+	return ""
 }
