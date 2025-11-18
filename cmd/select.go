@@ -107,7 +107,7 @@ func runSelect(cmd *cobra.Command, args []string) {
 		// Fallback: just list them
 		fmt.Fprintln(os.Stderr, "fzf not found. Install fzf for interactive selection.")
 		fmt.Fprintln(os.Stderr, "Listing matching repositories:")
-		outputTable(results, false)
+		outputTable(results, false, false, nil)
 	}
 }
 

@@ -50,7 +50,7 @@ func runInfo(cmd *cobra.Command, args []string) {
 			exitWithError("No repository found matching '%s'", queryStr)
 		} else {
 			fmt.Printf("Multiple repositories match '%s':\n\n", queryStr)
-			outputTable(matches, false)
+			outputTable(matches, false, false, nil)
 			fmt.Println("\nPlease be more specific or use 'rog select' to choose interactively.")
 			return
 		}
