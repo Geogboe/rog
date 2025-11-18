@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/query"
 )
@@ -31,6 +32,7 @@ var (
 	listFormat string
 	listJSON   bool
 	listYAML   bool
+	listFields string
 )
 
 var listCmd = &cobra.Command{
@@ -51,8 +53,12 @@ Output modes:
   --short: Minimal output (name, language, path)
   (default): Standard output (name, lang, host, branch, status, commit, root, path)
   --long: Detailed output (adds author, remote URL)
+  --fields: Custom fields (comma-separated)
   --json: JSON output (alias for --format json)
   --yaml: YAML output (alias for --format yaml)
+
+Available fields:
+  name, lang, host, branch, status, commit, author, root, path, remote, tags, description
 
 Examples:
   rog list                           # List all repositories
@@ -60,6 +66,7 @@ Examples:
   rog list --lang go --tag cli       # Go repos tagged with "cli"
   rog list --dirty                   # Repos with uncommitted changes
   rog list --short                   # Minimal output
+  rog list --fields name,lang,branch # Custom fields
   rog list --json                    # JSON format
   rog list --sort last-commit --limit 10  # 10 most recently committed`,
 	Run: runList,
@@ -81,6 +88,7 @@ func init() {
 	listCmd.Flags().IntVar(&listLimit, "limit", 0, "Limit number of results")
 	listCmd.Flags().BoolVar(&listLong, "long", false, "Show detailed information")
 	listCmd.Flags().BoolVar(&listShort, "short", false, "Show minimal information")
+	listCmd.Flags().StringVar(&listFields, "fields", "", "Custom fields to display (comma-separated)")
 	listCmd.Flags().StringVar(&listFormat, "format", "table", "Output format: table, json, yaml")
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output in JSON format (alias for --format json)")
 	listCmd.Flags().BoolVar(&listYAML, "yaml", false, "Output in YAML format (alias for --format yaml)")
@@ -90,6 +98,9 @@ func runList(cmd *cobra.Command, args []string) {
 	// Validate mutually exclusive flags
 	if listShort && listLong {
 		exitWithError("Cannot use --short and --long together")
+	}
+	if listFields != "" && (listShort || listLong) {
+		exitWithError("Cannot use --fields with --short or --long")
 	}
 
 	// Handle format aliases
@@ -101,6 +112,19 @@ func runList(cmd *cobra.Command, args []string) {
 	}
 	if listJSON && listYAML {
 		exitWithError("Cannot use --json and --yaml together")
+	}
+
+	// Determine which fields to display
+	var fields []string
+	if listFields != "" {
+		// Use explicitly specified fields
+		fields = parseFields(listFields)
+	} else {
+		// Try to load default fields from config
+		cfg, err := config.Load()
+		if err == nil && cfg.List != nil && len(cfg.List.DefaultFields) > 0 {
+			fields = cfg.List.DefaultFields
+		}
 	}
 
 	// Load index
@@ -160,7 +184,7 @@ func runList(cmd *cobra.Command, args []string) {
 	case "yaml":
 		outputYAML(results)
 	default:
-		outputTable(results, listShort, listLong)
+		outputTable(results, listShort, listLong, fields)
 	}
 }
 
@@ -177,62 +201,180 @@ func parseSortField(s string) query.SortField {
 	}
 }
 
-func outputTable(repos []*index.Repo, short bool, long bool) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-
-	if short {
-		fmt.Fprintln(w, "NAME\tLANG\tPATH")
-	} else if long {
-		fmt.Fprintln(w, "NAME\tLANG\tHOST\tBRANCH\tSTATUS\tLAST COMMIT\tAUTHOR\tROOT\tPATH\tREMOTE")
-	} else {
-		fmt.Fprintln(w, "NAME\tLANG\tHOST\tBRANCH\tSTATUS\tLAST COMMIT\tROOT\tPATH")
+// parseFields parses a comma-separated list of fields and validates them
+func parseFields(fieldsStr string) []string {
+	validFields := map[string]bool{
+		"name":        true,
+		"lang":        true,
+		"host":        true,
+		"branch":      true,
+		"status":      true,
+		"commit":      true,
+		"author":      true,
+		"root":        true,
+		"path":        true,
+		"remote":      true,
+		"tags":        true,
+		"description": true,
 	}
 
-	for _, repo := range repos {
-		name := repo.Name
-		lang := repo.PrimaryLanguage
-		if lang == "" {
-			lang = "unknown"
-		}
+	fields := strings.Split(fieldsStr, ",")
+	result := make([]string, 0, len(fields))
 
-		if short {
-			// Short format: just name, language, and path
-			path := repo.Root + "/" + repo.RelPath
-			fmt.Fprintf(w, "%s\t%s\t%s\n", name, lang, path)
+	for _, field := range fields {
+		field = strings.TrimSpace(strings.ToLower(field))
+		if field == "" {
+			continue
+		}
+		if !validFields[field] {
+			exitWithError("Invalid field: %s\nValid fields: name, lang, host, branch, status, commit, author, root, path, remote, tags, description", field)
+		}
+		result = append(result, field)
+	}
+
+	if len(result) == 0 {
+		exitWithError("No valid fields specified")
+	}
+
+	return result
+}
+
+func outputTable(repos []*index.Repo, short bool, long bool, customFields []string) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	// Determine which fields to display
+	var fields []string
+	if len(customFields) > 0 {
+		fields = customFields
+	} else if short {
+		fields = []string{"name", "lang", "path"}
+	} else if long {
+		fields = []string{"name", "lang", "host", "branch", "status", "commit", "author", "root", "path", "remote"}
+	} else {
+		fields = []string{"name", "lang", "host", "branch", "status", "commit", "root", "path"}
+	}
+
+	// Field display names (for headers)
+	fieldNames := map[string]string{
+		"name":        "NAME",
+		"lang":        "LANG",
+		"host":        "HOST",
+		"branch":      "BRANCH",
+		"status":      "STATUS",
+		"commit":      "LAST COMMIT",
+		"author":      "AUTHOR",
+		"root":        "ROOT",
+		"path":        "PATH",
+		"remote":      "REMOTE",
+		"tags":        "TAGS",
+		"description": "DESCRIPTION",
+	}
+
+	// Print header
+	header := make([]string, len(fields))
+	for i, field := range fields {
+		if displayName, ok := fieldNames[field]; ok {
+			header[i] = displayName
 		} else {
-			host := repo.Host
-			if host == "" {
-				host = "-"
-			}
-			branch := repo.CurrentBranch
-			if branch == "" {
-				branch = "-"
-			}
-
-			status := formatStatus(repo)
-			lastCommit := formatTime(repo.LastCommitTime)
-
-			if long {
-				author := repo.LastCommitAuthor
-				if len(author) > 20 {
-					author = author[:17] + "..."
-				}
-				remote := repo.RemoteURL
-				if len(remote) > 40 {
-					remote = remote[:37] + "..."
-				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					name, lang, host, branch, status, lastCommit, author, repo.Root, repo.RelPath, remote)
-			} else {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-					name, lang, host, branch, status, lastCommit, repo.Root, repo.RelPath)
-			}
+			header[i] = strings.ToUpper(field)
 		}
+	}
+	fmt.Fprintln(w, strings.Join(header, "\t"))
+
+	// Check if root is in the fields
+	hasRoot := false
+	for _, field := range fields {
+		if field == "root" {
+			hasRoot = true
+			break
+		}
+	}
+
+	// Print rows
+	for _, repo := range repos {
+		values := make([]string, len(fields))
+		for i, field := range fields {
+			values[i] = getFieldValue(repo, field, hasRoot)
+		}
+		fmt.Fprintln(w, strings.Join(values, "\t"))
 	}
 
 	w.Flush()
-
 	fmt.Printf("\nTotal: %d repositories\n", len(repos))
+}
+
+// getFieldValue returns the value for a specific field from a repo
+func getFieldValue(repo *index.Repo, field string, hasRoot bool) string {
+	switch field {
+	case "name":
+		return repo.Name
+	case "lang":
+		if repo.PrimaryLanguage == "" {
+			return "unknown"
+		}
+		return repo.PrimaryLanguage
+	case "host":
+		if repo.Host == "" {
+			return "-"
+		}
+		return repo.Host
+	case "branch":
+		if repo.CurrentBranch == "" {
+			return "-"
+		}
+		return repo.CurrentBranch
+	case "status":
+		return formatStatus(repo)
+	case "commit":
+		return formatTime(repo.LastCommitTime)
+	case "author":
+		author := repo.LastCommitAuthor
+		if len(author) > 20 {
+			return author[:17] + "..."
+		}
+		if author == "" {
+			return "-"
+		}
+		return author
+	case "root":
+		return repo.Root
+	case "path":
+		// When root is shown separately, show relative path
+		// When root is not shown, show combined path (like in short mode)
+		if hasRoot {
+			return repo.RelPath
+		}
+		// Combine root and relpath for short mode
+		if repo.RelPath == "" {
+			return repo.Root
+		}
+		return repo.Root + "/" + repo.RelPath
+	case "remote":
+		remote := repo.RemoteURL
+		if len(remote) > 40 {
+			return remote[:37] + "..."
+		}
+		if remote == "" {
+			return "-"
+		}
+		return remote
+	case "tags":
+		if len(repo.Tags) == 0 {
+			return "-"
+		}
+		return strings.Join(repo.Tags, ",")
+	case "description":
+		desc := repo.Description
+		if len(desc) > 50 {
+			return desc[:47] + "..."
+		}
+		if desc == "" {
+			return "-"
+		}
+		return desc
+	default:
+		return "-"
+	}
 }
 
 func formatStatus(repo *index.Repo) string {

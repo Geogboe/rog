@@ -10,9 +10,10 @@ import (
 
 // Config represents the rog configuration
 type Config struct {
-	Roots  []Root     `yaml:"roots"`
-	Editor string     `yaml:"editor"`
-	LLM    *LLMConfig `yaml:"llm,omitempty"`
+	Roots  []Root      `yaml:"roots"`
+	Editor string      `yaml:"editor"`
+	LLM    *LLMConfig  `yaml:"llm,omitempty"`
+	List   *ListConfig `yaml:"list,omitempty"`
 }
 
 // Root represents a search root configuration
@@ -31,6 +32,11 @@ type LLMConfig struct {
 	Model             string `yaml:"model"`
 	APIKey            string `yaml:"api_key,omitempty"`
 	ExtraInstructions string `yaml:"extra_instructions,omitempty"`
+}
+
+// ListConfig represents list command configuration
+type ListConfig struct {
+	DefaultFields []string `yaml:"default_fields,omitempty"`
 }
 
 // Load loads configuration from file with environment variable overrides
