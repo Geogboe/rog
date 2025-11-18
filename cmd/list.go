@@ -27,7 +27,10 @@ var (
 	listSort   string
 	listLimit  int
 	listLong   bool
+	listShort  bool
 	listFormat string
+	listJSON   bool
+	listYAML   bool
 )
 
 var listCmd = &cobra.Command{
@@ -44,11 +47,20 @@ Search terms are fuzzy-matched against:
 
 Filters are applied using flags for exact matches.
 
+Output modes:
+  --short: Minimal output (name, language, path)
+  (default): Standard output (name, lang, host, branch, status, commit, root, path)
+  --long: Detailed output (adds author, remote URL)
+  --json: JSON output (alias for --format json)
+  --yaml: YAML output (alias for --format yaml)
+
 Examples:
   rog list                           # List all repositories
   rog list api                       # Fuzzy search for "api"
   rog list --lang go --tag cli       # Go repos tagged with "cli"
   rog list --dirty                   # Repos with uncommitted changes
+  rog list --short                   # Minimal output
+  rog list --json                    # JSON format
   rog list --sort last-commit --limit 10  # 10 most recently committed`,
 	Run: runList,
 	Aliases: []string{"ls"},
@@ -68,10 +80,29 @@ func init() {
 	listCmd.Flags().StringVar(&listSort, "sort", "name", "Sort by: name, last-commit, path, last-scan")
 	listCmd.Flags().IntVar(&listLimit, "limit", 0, "Limit number of results")
 	listCmd.Flags().BoolVar(&listLong, "long", false, "Show detailed information")
+	listCmd.Flags().BoolVar(&listShort, "short", false, "Show minimal information")
 	listCmd.Flags().StringVar(&listFormat, "format", "table", "Output format: table, json, yaml")
+	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output in JSON format (alias for --format json)")
+	listCmd.Flags().BoolVar(&listYAML, "yaml", false, "Output in YAML format (alias for --format yaml)")
 }
 
 func runList(cmd *cobra.Command, args []string) {
+	// Validate mutually exclusive flags
+	if listShort && listLong {
+		exitWithError("Cannot use --short and --long together")
+	}
+
+	// Handle format aliases
+	if listJSON {
+		listFormat = "json"
+	}
+	if listYAML {
+		listFormat = "yaml"
+	}
+	if listJSON && listYAML {
+		exitWithError("Cannot use --json and --yaml together")
+	}
+
 	// Load index
 	idx, err := index.Load()
 	if err != nil {
@@ -129,7 +160,7 @@ func runList(cmd *cobra.Command, args []string) {
 	case "yaml":
 		outputYAML(results)
 	default:
-		outputTable(results, listLong)
+		outputTable(results, listShort, listLong)
 	}
 }
 
@@ -146,10 +177,12 @@ func parseSortField(s string) query.SortField {
 	}
 }
 
-func outputTable(repos []*index.Repo, long bool) {
+func outputTable(repos []*index.Repo, short bool, long bool) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
-	if long {
+	if short {
+		fmt.Fprintln(w, "NAME\tLANG\tPATH")
+	} else if long {
 		fmt.Fprintln(w, "NAME\tLANG\tHOST\tBRANCH\tSTATUS\tLAST COMMIT\tAUTHOR\tROOT\tPATH\tREMOTE")
 	} else {
 		fmt.Fprintln(w, "NAME\tLANG\tHOST\tBRANCH\tSTATUS\tLAST COMMIT\tROOT\tPATH")
@@ -161,32 +194,39 @@ func outputTable(repos []*index.Repo, long bool) {
 		if lang == "" {
 			lang = "unknown"
 		}
-		host := repo.Host
-		if host == "" {
-			host = "-"
-		}
-		branch := repo.CurrentBranch
-		if branch == "" {
-			branch = "-"
-		}
 
-		status := formatStatus(repo)
-		lastCommit := formatTime(repo.LastCommitTime)
-
-		if long {
-			author := repo.LastCommitAuthor
-			if len(author) > 20 {
-				author = author[:17] + "..."
-			}
-			remote := repo.RemoteURL
-			if len(remote) > 40 {
-				remote = remote[:37] + "..."
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				name, lang, host, branch, status, lastCommit, author, repo.Root, repo.RelPath, remote)
+		if short {
+			// Short format: just name, language, and path
+			path := repo.Root + "/" + repo.RelPath
+			fmt.Fprintf(w, "%s\t%s\t%s\n", name, lang, path)
 		} else {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				name, lang, host, branch, status, lastCommit, repo.Root, repo.RelPath)
+			host := repo.Host
+			if host == "" {
+				host = "-"
+			}
+			branch := repo.CurrentBranch
+			if branch == "" {
+				branch = "-"
+			}
+
+			status := formatStatus(repo)
+			lastCommit := formatTime(repo.LastCommitTime)
+
+			if long {
+				author := repo.LastCommitAuthor
+				if len(author) > 20 {
+					author = author[:17] + "..."
+				}
+				remote := repo.RemoteURL
+				if len(remote) > 40 {
+					remote = remote[:37] + "..."
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					name, lang, host, branch, status, lastCommit, author, repo.Root, repo.RelPath, remote)
+			} else {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+					name, lang, host, branch, status, lastCommit, repo.Root, repo.RelPath)
+			}
 		}
 	}
 
