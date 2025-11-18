@@ -243,18 +243,38 @@ func (s *Scanner) processRepo(repoPath string) error {
 }
 
 // findRoot determines which root a repository belongs to
+// When multiple roots match (nested roots), it returns the most specific one (longest path)
 func (s *Scanner) findRoot(repoPath string) (string, string) {
+	var bestMatch struct {
+		name    string
+		relPath string
+		pathLen int
+	}
+
 	for _, root := range s.cfg.Roots {
 		if rel, err := filepath.Rel(root.Path, repoPath); err == nil {
-			if rel[0] != '.' && rel != "" {
-				return root.Name, rel
-			}
-			if rel == "." {
-				return root.Name, ""
+			// Check if this path is within the root (not outside with ..)
+			if len(rel) > 0 && rel[0] != '.' {
+				// This is a valid match
+				rootPathLen := len(root.Path)
+				if rootPathLen > bestMatch.pathLen {
+					bestMatch.name = root.Name
+					bestMatch.relPath = rel
+					bestMatch.pathLen = rootPathLen
+				}
+			} else if rel == "." {
+				// Repo is at the root itself
+				rootPathLen := len(root.Path)
+				if rootPathLen > bestMatch.pathLen {
+					bestMatch.name = root.Name
+					bestMatch.relPath = ""
+					bestMatch.pathLen = rootPathLen
+				}
 			}
 		}
 	}
-	return "", ""
+
+	return bestMatch.name, bestMatch.relPath
 }
 
 // extractReadmeDescription extracts a description from README.md
