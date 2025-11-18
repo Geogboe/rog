@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/Geogboe/rog/internal/config"
@@ -113,44 +115,19 @@ func (s *Scanner) walkRoot(root config.Root, repoChan chan<- string) error {
 		}
 		depth := 0
 		if relPath != "." {
-			depth = len(filepath.SplitList(relPath))
-			// Correct depth calculation
-			depth = len(filepath.Split(relPath))
+			// Count path separators to determine depth
+			depth = strings.Count(relPath, string(filepath.Separator)) + 1
 		}
 		if depth > root.MaxDepth {
 			return fs.SkipDir
 		}
 
-		// Check if this is a git repository
-		gitDir := filepath.Join(path, ".git")
-		if stat, err := filepath.EvalSymlinks(gitDir); err == nil {
-			if statInfo, err := filepath.Abs(stat); err == nil {
-				if _, err := filepath.Abs(statInfo); err == nil {
-					// This is a git repo, process it
-					repoChan <- path
-					// Don't descend into this repo
-					return fs.SkipDir
-				}
-			}
-		}
-
-		// Check for .git file (submodule or worktree)
-		gitFile := filepath.Join(path, ".git")
-		if info, err := d.Info(); err == nil {
-			if !info.IsDir() {
-				// Check if .git is a file
-				if info.Name() == ".git" {
-					repoChan <- filepath.Dir(path)
-					return fs.SkipDir
-				}
-			}
-		}
-
-		// Simple check: does .git exist?
-		if d.Name() == ".git" {
-			// Parent directory is the repo
-			repoPath := filepath.Dir(path)
-			repoChan <- repoPath
+		// Check if directory contains .git (making it a git repo)
+		gitPath := filepath.Join(path, ".git")
+		if _, err := os.Stat(gitPath); err == nil {
+			// This is a git repo, process it
+			repoChan <- path
+			// Don't descend into this repo
 			return fs.SkipDir
 		}
 
