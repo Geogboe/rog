@@ -17,10 +17,12 @@ type Config struct {
 
 // Root represents a search root configuration
 type Root struct {
-	Name     string   `yaml:"name"`
-	Path     string   `yaml:"path"`
-	MaxDepth int      `yaml:"max_depth"`
-	Exclude  []string `yaml:"exclude,omitempty"`
+	Name      string   `yaml:"name"`
+	Path      string   `yaml:"path"`
+	MaxDepth  int      `yaml:"max_depth"`
+	Exclude   []string `yaml:"exclude,omitempty"`
+	WSL       bool     `yaml:"wsl,omitempty"`        // True if this root is in WSL
+	WSLDistro string   `yaml:"wsl_distro,omitempty"` // WSL distro name (e.g., "Ubuntu")
 }
 
 // LLMConfig represents LLM configuration

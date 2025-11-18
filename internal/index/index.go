@@ -24,11 +24,13 @@ type Index struct {
 // Repo represents a single repository entry
 type Repo struct {
 	// Identity
-	ID      string `json:"id"`       // Hash of absolute path
-	Name    string `json:"name"`     // Directory name
-	Root    string `json:"root"`     // Root identifier
-	RelPath string `json:"rel_path"` // Relative to root
-	AbsPath string `json:"abs_path"` // Full resolved path
+	ID        string `json:"id"`         // Hash of absolute path
+	Name      string `json:"name"`       // Directory name
+	Root      string `json:"root"`       // Root identifier
+	RelPath   string `json:"rel_path"`   // Relative to root
+	AbsPath   string `json:"abs_path"`   // Full resolved path
+	IsWSL     bool   `json:"is_wsl"`     // True if repo is in WSL
+	WSLDistro string `json:"wsl_distro"` // WSL distro name if IsWSL is true
 
 	// Git Info
 	RemoteURL        string    `json:"remote_url,omitempty"`
