@@ -244,14 +244,19 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 
 	// Determine which fields to display
 	var fields []string
+	var descMaxLen int
 	if len(customFields) > 0 {
 		fields = customFields
+		descMaxLen = 80 // Custom fields get longer descriptions
 	} else if short {
 		fields = []string{"name", "lang", "path"}
+		descMaxLen = 0 // No description in short mode
 	} else if long {
-		fields = []string{"name", "lang", "host", "branch", "status", "commit", "author", "root", "path", "remote"}
+		fields = []string{"name", "lang", "host", "branch", "status", "commit", "author", "description", "root", "path", "remote"}
+		descMaxLen = 80 // Long mode: 80 chars for description
 	} else {
-		fields = []string{"name", "lang", "host", "branch", "status", "commit", "root", "path"}
+		fields = []string{"name", "lang", "host", "branch", "status", "commit", "description", "root", "path"}
+		descMaxLen = 40 // Normal mode: 40 chars for description
 	}
 
 	// Field display names (for headers)
@@ -294,7 +299,7 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 	for _, repo := range repos {
 		values := make([]string, len(fields))
 		for i, field := range fields {
-			values[i] = getFieldValue(repo, field, hasRoot)
+			values[i] = getFieldValue(repo, field, hasRoot, descMaxLen)
 		}
 		fmt.Fprintln(w, strings.Join(values, "\t"))
 	}
@@ -304,7 +309,7 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 }
 
 // getFieldValue returns the value for a specific field from a repo
-func getFieldValue(repo *index.Repo, field string, hasRoot bool) string {
+func getFieldValue(repo *index.Repo, field string, hasRoot bool, descMaxLen int) string {
 	switch field {
 	case "name":
 		return repo.Name
@@ -365,11 +370,11 @@ func getFieldValue(repo *index.Repo, field string, hasRoot bool) string {
 		return strings.Join(repo.Tags, ",")
 	case "description":
 		desc := repo.Description
-		if len(desc) > 50 {
-			return desc[:47] + "..."
-		}
 		if desc == "" {
 			return "-"
+		}
+		if descMaxLen > 0 && len(desc) > descMaxLen {
+			return desc[:descMaxLen-3] + "..."
 		}
 		return desc
 	default:
