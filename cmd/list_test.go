@@ -713,7 +713,8 @@ func TestFieldsWithDescription(t *testing.T) {
 	})
 
 	assert.Contains(t, output2, "long-desc-repo")
-	assert.Contains(t, output2, "This is a very long description that should def...")
+	// Custom fields use 80 char limit for descriptions
+	assert.Contains(t, output2, "This is a very long description that should definitely be truncated when disp...")
 }
 
 func TestFieldsEmpty(t *testing.T) {
