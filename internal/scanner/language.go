@@ -27,7 +27,6 @@ var languageMarkers = map[string]string{
 	"*.csproj":        "C#",
 	"*.sln":           "C#",
 	"CMakeLists.txt":  "C++",
-	"Makefile":        "C",
 	"*.cabal":         "Haskell",
 	"stack.yaml":      "Haskell",
 	"*.nimble":        "Nim",

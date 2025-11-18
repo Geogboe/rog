@@ -86,8 +86,8 @@ func init() {
 	listCmd.Flags().BoolVar(&listBehind, "behind", false, "Show only repos behind remote")
 	listCmd.Flags().StringVar(&listSort, "sort", "name", "Sort by: name, last-commit, path, last-scan")
 	listCmd.Flags().IntVar(&listLimit, "limit", 0, "Limit number of results")
-	listCmd.Flags().BoolVar(&listLong, "long", false, "Show detailed information")
-	listCmd.Flags().BoolVar(&listShort, "short", false, "Show minimal information")
+	listCmd.Flags().BoolVarP(&listLong, "long", "l", false, "Show detailed information")
+	listCmd.Flags().BoolVarP(&listShort, "short", "s", false, "Show minimal information")
 	listCmd.Flags().StringVar(&listFields, "fields", "", "Custom fields to display (comma-separated)")
 	listCmd.Flags().StringVar(&listFormat, "format", "table", "Output format: table, json, yaml")
 	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output in JSON format (alias for --format json)")
@@ -255,8 +255,8 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 		fields = []string{"name", "lang", "host", "branch", "status", "commit", "author", "description", "root", "path", "remote"}
 		descMaxLen = 80 // Long mode: 80 chars for description
 	} else {
-		fields = []string{"name", "lang", "host", "branch", "status", "commit", "description", "root", "path"}
-		descMaxLen = 40 // Normal mode: 40 chars for description
+		fields = []string{"name", "lang", "host", "branch", "status", "commit", "root", "path"}
+		descMaxLen = 0 // Normal mode: no description
 	}
 
 	// Field display names (for headers)
