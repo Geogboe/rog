@@ -10,10 +10,11 @@ import (
 
 // Config represents the rog configuration
 type Config struct {
-	Roots  []Root      `yaml:"roots"`
-	Editor string      `yaml:"editor"`
-	LLM    *LLMConfig  `yaml:"llm,omitempty"`
-	List   *ListConfig `yaml:"list,omitempty"`
+	GlobalExcludes []string    `yaml:"global_excludes,omitempty"`
+	Roots          []Root      `yaml:"roots"`
+	Editor         string      `yaml:"editor"`
+	LLM            *LLMConfig  `yaml:"llm,omitempty"`
+	List           *ListConfig `yaml:"list,omitempty"`
 }
 
 // Root represents a search root configuration
@@ -109,12 +110,22 @@ func Save(cfg *Config) error {
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	return &Config{
+		GlobalExcludes: []string{
+			"node_modules",
+			"vendor",
+			".git",
+			"target",
+			"build",
+			"dist",
+			"__pycache__",
+			".venv",
+			"venv",
+		},
 		Roots: []Root{
 			{
 				Name:     "home",
 				Path:     homeDir,
 				MaxDepth: 3,
-				Exclude:  []string{"node_modules", "vendor", ".git"},
 			},
 		},
 		Editor: getDefaultEditor(),
@@ -197,13 +208,25 @@ func applyDefaults(cfg *Config) {
 		cfg.Editor = getDefaultEditor()
 	}
 
+	// Default global excludes (if not set)
+	if cfg.GlobalExcludes == nil {
+		cfg.GlobalExcludes = []string{
+			"node_modules",
+			"vendor",
+			".git",
+			"target",
+			"build",
+			"dist",
+			"__pycache__",
+			".venv",
+			"venv",
+		}
+	}
+
 	// Default max depth for roots
 	for i := range cfg.Roots {
 		if cfg.Roots[i].MaxDepth == 0 {
 			cfg.Roots[i].MaxDepth = 4
-		}
-		if cfg.Roots[i].Exclude == nil {
-			cfg.Roots[i].Exclude = []string{"node_modules", "vendor"}
 		}
 	}
 }

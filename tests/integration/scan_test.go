@@ -16,7 +16,7 @@ import (
 )
 
 // initGitRepo initializes a git repo with proper config
-func initGitRepo(t *testing.T, repoPath string) {
+func initGitRepo(t testing.TB, repoPath string) {
 	t.Helper()
 
 	// Init
@@ -39,7 +39,7 @@ func initGitRepo(t *testing.T, repoPath string) {
 }
 
 // commitFiles adds and commits all files in a repo
-func commitFiles(t *testing.T, repoPath string, message string) {
+func commitFiles(t testing.TB, repoPath string, message string) {
 	t.Helper()
 
 	cmd := exec.Command("git", "-C", repoPath, "add", ".")
@@ -54,7 +54,7 @@ func commitFiles(t *testing.T, repoPath string, message string) {
 }
 
 // setupTestRepos creates a test directory with multiple git repos
-func setupTestRepos(t *testing.T) string {
+func setupTestRepos(t testing.TB) string {
 	tmpDir := t.TempDir()
 
 	repos := []struct {
@@ -334,4 +334,127 @@ func TestScanStress(t *testing.T) {
 	require.NoError(t, scan.Scan())
 
 	assert.Equal(t, 50, idx.Count())
+}
+
+func TestGlobalExcludes(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create repos in various excluded directories
+	repos := map[string]string{
+		"main-repo":                    "main-repo",
+		"node_modules/dep":             "node_modules/dep",
+		"vendor/lib":                   "vendor/lib",
+		"build/artifact":               "build/artifact",
+		"nested/node_modules/deep-dep": "nested/node_modules/deep-dep",
+	}
+
+	for _, repoPath := range repos {
+		fullPath := filepath.Join(tmpDir, repoPath)
+		os.MkdirAll(fullPath, 0755)
+		initGitRepo(t, fullPath)
+		os.WriteFile(filepath.Join(fullPath, "README.md"), []byte("test"), 0644)
+		commitFiles(t, fullPath, "init")
+	}
+
+	// Create config with global excludes
+	cfg := &config.Config{
+		GlobalExcludes: []string{"node_modules", "vendor", "build"},
+		Roots: []config.Root{
+			{
+				Name:     "test",
+				Path:     tmpDir,
+				MaxDepth: 5,
+			},
+		},
+	}
+
+	// Scan
+	idx := index.New()
+	scan := scanner.New(cfg, idx)
+	require.NoError(t, scan.Scan())
+
+	// Should only find main-repo (others are in excluded dirs)
+	assert.Equal(t, 1, idx.Count())
+	found := idx.GetByName("main-repo")
+	assert.Equal(t, 1, len(found))
+}
+
+func TestGlobalExcludesWithRootOverrides(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create repos
+	mainRepo := filepath.Join(tmpDir, "main-repo")
+	customExcluded := filepath.Join(tmpDir, "custom-excluded", "repo")
+	globalExcluded := filepath.Join(tmpDir, "vendor", "repo")
+
+	for _, repoPath := range []string{mainRepo, customExcluded, globalExcluded} {
+		os.MkdirAll(repoPath, 0755)
+		initGitRepo(t, repoPath)
+		os.WriteFile(filepath.Join(repoPath, "README.md"), []byte("test"), 0644)
+		commitFiles(t, repoPath, "init")
+	}
+
+	// Create config with both global and root-specific excludes
+	cfg := &config.Config{
+		GlobalExcludes: []string{"vendor"},
+		Roots: []config.Root{
+			{
+				Name:     "test",
+				Path:     tmpDir,
+				MaxDepth: 5,
+				Exclude:  []string{"custom-excluded"},
+			},
+		},
+	}
+
+	// Scan
+	idx := index.New()
+	scan := scanner.New(cfg, idx)
+	require.NoError(t, scan.Scan())
+
+	// Should only find main-repo (others are excluded)
+	assert.Equal(t, 1, idx.Count())
+	found := idx.GetByName("main-repo")
+	assert.Equal(t, 1, len(found))
+}
+
+func TestGlobPatternExcludes(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create repos with pattern-based names
+	repos := []string{
+		"main-repo",
+		"test-cache/repo",
+		"build-cache/repo",
+		"random-cache/repo",
+		"normal/repo",
+	}
+
+	for _, repoPath := range repos {
+		fullPath := filepath.Join(tmpDir, repoPath)
+		os.MkdirAll(fullPath, 0755)
+		initGitRepo(t, fullPath)
+		os.WriteFile(filepath.Join(fullPath, "README.md"), []byte("test"), 0644)
+		commitFiles(t, fullPath, "init")
+	}
+
+	// Create config with glob pattern excludes
+	cfg := &config.Config{
+		GlobalExcludes: []string{"*-cache"},
+		Roots: []config.Root{
+			{
+				Name:     "test",
+				Path:     tmpDir,
+				MaxDepth: 5,
+			},
+		},
+	}
+
+	// Scan
+	idx := index.New()
+	scan := scanner.New(cfg, idx)
+	require.NoError(t, scan.Scan())
+
+	// Should find main-repo and normal/repo (cache dirs excluded)
+	assert.Equal(t, 2, idx.Count())
 }
