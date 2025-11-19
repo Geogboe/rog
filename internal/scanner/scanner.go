@@ -2,8 +2,10 @@ package scanner
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -119,6 +121,12 @@ func (s *Scanner) Scan() error {
 		}()
 	}
 
+	// Check if fd is available (once, before scanning roots)
+	fdAvailable := isFdAvailable()
+	if !fdAvailable {
+		logger.Verbose("fd not found in PATH. Using built-in scanner (slower). Install fd for 10-30x faster scans: https://github.com/sharkdp/fd")
+	}
+
 	// Walk each root in parallel
 	var rootWg sync.WaitGroup
 	for _, root := range s.cfg.Roots {
@@ -126,8 +134,19 @@ func (s *Scanner) Scan() error {
 		go func(r config.Root) {
 			defer rootWg.Done()
 			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, r.Path, r.MaxDepth)
-			if err := s.walkRootParallel(r, repoChan); err != nil {
-				logger.Verbose("Failed to walk root %s: %v", r.Name, err)
+
+			// Use fd if available, otherwise fall back to parallel walker
+			if fdAvailable {
+				if err := s.walkRootWithFd(r, repoChan); err != nil {
+					logger.Verbose("fd failed for root %s, falling back to built-in scanner: %v", r.Name, err)
+					if err := s.walkRootParallel(r, repoChan); err != nil {
+						logger.Verbose("Failed to walk root %s: %v", r.Name, err)
+					}
+				}
+			} else {
+				if err := s.walkRootParallel(r, repoChan); err != nil {
+					logger.Verbose("Failed to walk root %s: %v", r.Name, err)
+				}
 			}
 		}(root)
 	}
@@ -140,6 +159,64 @@ func (s *Scanner) Scan() error {
 	wg.Wait()
 
 	return nil
+}
+
+// isFdAvailable checks if fd command is available in PATH
+func isFdAvailable() bool {
+	_, err := exec.LookPath("fd")
+	return err == nil
+}
+
+// walkRootWithFd uses fd command to quickly find .git directories
+func (s *Scanner) walkRootWithFd(root config.Root, repoChan chan<- string) error {
+	// Build fd command
+	args := []string{
+		"-t", "d",        // type: directory
+		"-H",             // include hidden
+		"--max-depth", fmt.Sprintf("%d", root.MaxDepth),
+		"-a", ".git",     // search for .git
+		root.Path,
+	}
+
+	// Add excludes
+	excludes := make([]string, 0, len(s.cfg.GlobalExcludes)+len(root.Exclude))
+	excludes = append(excludes, s.cfg.GlobalExcludes...)
+	excludes = append(excludes, root.Exclude...)
+
+	for _, exclude := range excludes {
+		args = append(args, "-E", exclude)
+	}
+
+	logger.Debug("Running: fd %s", strings.Join(args, " "))
+
+	cmd := exec.Command("fd", args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("fd command failed: %w", err)
+	}
+
+	// Parse output (one .git path per line)
+	scanner := bufio.NewScanner(&stdout)
+	for scanner.Scan() {
+		gitPath := strings.TrimSpace(scanner.Text())
+		if gitPath == "" {
+			continue
+		}
+
+		// Remove /.git suffix to get repo path
+		repoPath := filepath.Dir(gitPath)
+
+		s.metrics.mu.Lock()
+		s.metrics.ReposFound++
+		s.metrics.mu.Unlock()
+
+		logger.Debug("Found git repository: %s", repoPath)
+		repoChan <- repoPath
+	}
+
+	return scanner.Err()
 }
 
 // walkRootParallel walks a single root directory with parallel subdirectory exploration
@@ -272,25 +349,22 @@ func (s *Scanner) processRepo(repoPath string) error {
 		AbsPath: repoPath,
 	}
 
-	// Get git information
-	if branch, err := git.GetBranch(repoPath); err == nil {
-		repo.CurrentBranch = branch
+	// Get git information (combined call for better performance)
+	if info, err := git.GetRepoInfo(repoPath); err == nil {
+		repo.CurrentBranch = info.Branch
+		if info.Commit != nil {
+			repo.LastCommitTime = info.Commit.Timestamp
+			repo.LastCommitAuthor = info.Commit.Author
+			repo.LastCommitHash = info.Commit.Hash
+		}
+		repo.RemoteURL = info.RemoteURL
+		repo.Host = info.Host
 	}
 
-	if commit, err := git.GetLastCommit(repoPath); err == nil {
-		repo.LastCommitTime = commit.Timestamp
-		repo.LastCommitAuthor = commit.Author
-		repo.LastCommitHash = commit.Hash
-	}
-
+	// Get status separately (required for porcelain parsing)
 	if status, err := git.GetStatus(repoPath); err == nil {
 		repo.IsDirty = status.IsDirty
 		repo.HasUntracked = status.HasUntracked
-	}
-
-	if remoteURL, err := git.GetRemoteURL(repoPath); err == nil {
-		repo.RemoteURL = remoteURL
-		repo.Host = git.ExtractHost(remoteURL)
 	}
 
 	// Check remote status if requested
