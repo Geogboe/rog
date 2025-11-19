@@ -140,13 +140,25 @@ rog scan --llm --refresh-meta
 Default location: `~/.config/rog/config.yml`
 
 ```yaml
+# Global excludes apply to all roots (supports glob patterns)
+global_excludes:
+  - node_modules
+  - vendor
+  - ".git"
+  - target
+  - build
+  - dist
+  - "*-cache"        # Glob pattern: matches test-cache, build-cache, etc.
+  - "**/__pycache__" # Matches __pycache__ at any depth
+
 roots:
   - name: dev
     path: ~/dev
     max_depth: 4
     exclude:
-      - node_modules
-      - vendor
+      # Root-specific excludes (merged with global_excludes)
+      - ".idea"
+      - ".vscode"
 
   - name: work
     path: ~/work/projects
@@ -159,6 +171,14 @@ llm:
   model: codellama
   extra_instructions: "Focus on domain and technology tags."
 ```
+
+### Configuration Options
+
+- `global_excludes`: Directory patterns to exclude from all roots (supports glob patterns like `*-cache`, `**/vendor`)
+- `roots[].exclude`: Root-specific excludes (added to global_excludes, not replacing)
+- `roots[].max_depth`: How deep to scan (default: 4)
+- `editor`: Editor command (default: `$EDITOR` or `vi`)
+- `llm`: Optional LLM configuration for metadata enrichment
 
 ### WSL Support (Windows)
 
@@ -270,8 +290,11 @@ rog list --behind
 |-----------|--------|---------|
 | `rog list` | < 100ms | ~20ms |
 | `rog info` | < 100ms | ~10ms |
-| `rog scan` | < 2s/100 repos | ~1.5s |
-| `rog scan --remote` | < 10s/100 repos | ~5s |
+| `rog scan` (with fd*) | < 5s/500 repos | ~2-3s |
+| `rog scan` (no fd) | < 10s/500 repos | ~8s |
+| `rog scan --remote` | < 30s/500 repos | ~15s |
+
+\* Install `fd` for 10-30x faster scanning: `brew install fd` or `cargo install fd-find`
 
 ## Documentation
 

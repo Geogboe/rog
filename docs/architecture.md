@@ -42,16 +42,17 @@ rog is a fast, local-first Git repository navigator built in Go. This document d
 **Data Structures**:
 ```go
 type Config struct {
-    Roots  []Root
-    Editor string
-    LLM    *LLMConfig
+    GlobalExcludes []string  // Shared across all roots
+    Roots          []Root
+    Editor         string
+    LLM            *LLMConfig
 }
 
 type Root struct {
     Name     string
     Path     string
     MaxDepth int
-    Exclude  []string
+    Exclude  []string  // Root-specific (merged with GlobalExcludes)
 }
 
 type LLMConfig struct {

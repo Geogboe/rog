@@ -27,6 +27,61 @@ type RemoteStatus struct {
 	Behind int
 }
 
+// RepoInfo combines branch, commit, and remote info (fetched in one call)
+type RepoInfo struct {
+	Branch    string
+	Commit    *CommitInfo
+	RemoteURL string
+	Host      string
+}
+
+// GetRepoInfo gets branch, commit, and remote info in a single efficient call
+// This is much faster than calling GetBranch, GetLastCommit, and GetRemoteURL separately
+func GetRepoInfo(repoPath string) (*RepoInfo, error) {
+	// Use a single git command with format to get branch, commit, and remote
+	// Format: branch|hash|author|timestamp|remoteurl
+	cmd := exec.Command("bash", "-c",
+		`git rev-parse --abbrev-ref HEAD && git log -1 --format=%H\|%an\|%ct 2>/dev/null && git remote get-url origin 2>/dev/null || true`)
+	cmd.Dir = repoPath
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repo info: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 1 {
+		return nil, fmt.Errorf("unexpected git output")
+	}
+
+	info := &RepoInfo{}
+
+	// Line 1: branch name
+	info.Branch = strings.TrimSpace(lines[0])
+
+	// Line 2: commit info (hash|author|timestamp)
+	if len(lines) > 1 && lines[1] != "" {
+		parts := strings.Split(lines[1], "|")
+		if len(parts) == 3 {
+			var timestamp int64
+			fmt.Sscanf(parts[2], "%d", &timestamp)
+			info.Commit = &CommitInfo{
+				Hash:      parts[0],
+				Author:    parts[1],
+				Timestamp: time.Unix(timestamp, 0),
+			}
+		}
+	}
+
+	// Line 3: remote URL
+	if len(lines) > 2 && lines[2] != "" {
+		info.RemoteURL = strings.TrimSpace(lines[2])
+		info.Host = ExtractHost(info.RemoteURL)
+	}
+
+	return info, nil
+}
+
 // GetBranch returns the current branch name
 func GetBranch(repoPath string) (string, error) {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
