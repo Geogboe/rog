@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +13,7 @@ import (
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/git"
 	"github.com/Geogboe/rog/internal/index"
+	"github.com/Geogboe/rog/internal/logger"
 	"github.com/Geogboe/rog/internal/metadata"
 )
 
@@ -46,37 +46,49 @@ func (s *Scanner) Scan() error {
 	// Load global metadata
 	globalMeta, err := metadata.LoadGlobalMeta()
 	if err != nil {
-		log.Printf("Warning: failed to load global metadata: %v", err)
+		logger.Verbose("Failed to load global metadata: %v", err)
 		globalMeta = &metadata.GlobalMeta{}
 	}
 	s.globalMeta = globalMeta
+
+	logger.Debug("Starting scan with %d workers across %d roots", s.workers, len(s.cfg.Roots))
 
 	// Channel for discovered repos
 	repoChan := make(chan string, 100)
 	var wg sync.WaitGroup
 
-	// Start worker pool
+	// Start worker pool for processing repos
 	for i := 0; i < s.workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for repoPath := range repoChan {
+				logger.Debug("Processing repository: %s", repoPath)
 				if err := s.processRepo(repoPath); err != nil {
-					log.Printf("Warning: failed to process %s: %v", repoPath, err)
+					logger.Verbose("Failed to process %s: %v", repoPath, err)
 				}
 			}
 		}()
 	}
 
-	// Walk each root
+	// Walk each root in parallel
+	var rootWg sync.WaitGroup
 	for _, root := range s.cfg.Roots {
-		if err := s.walkRoot(root, repoChan); err != nil {
-			log.Printf("Warning: failed to walk root %s: %v", root.Name, err)
-		}
+		rootWg.Add(1)
+		go func(r config.Root) {
+			defer rootWg.Done()
+			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, r.Path, r.MaxDepth)
+			if err := s.walkRoot(r, repoChan); err != nil {
+				logger.Verbose("Failed to walk root %s: %v", r.Name, err)
+			}
+		}(root)
 	}
 
-	// Close channel and wait for workers
+	// Wait for all roots to finish walking, then close channel
+	rootWg.Wait()
 	close(repoChan)
+
+	// Wait for all repo processing to finish
 	wg.Wait()
 
 	return nil
@@ -84,11 +96,10 @@ func (s *Scanner) Scan() error {
 
 // walkRoot walks a single root directory
 func (s *Scanner) walkRoot(root config.Root, repoChan chan<- string) error {
-	// Build exclude map for fast lookup
-	excludeMap := make(map[string]bool)
-	for _, exclude := range root.Exclude {
-		excludeMap[exclude] = true
-	}
+	// Merge global excludes with root-specific excludes
+	excludes := make([]string, 0, len(s.cfg.GlobalExcludes)+len(root.Exclude))
+	excludes = append(excludes, s.cfg.GlobalExcludes...)
+	excludes = append(excludes, root.Exclude...)
 
 	return filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -104,8 +115,9 @@ func (s *Scanner) walkRoot(root config.Root, repoChan chan<- string) error {
 			return nil
 		}
 
-		// Check if excluded
-		if excludeMap[d.Name()] {
+		// Check if excluded (supports glob patterns)
+		if s.isExcluded(d.Name(), path, root.Path, excludes) {
+			logger.Debug("Skipping excluded directory: %s", path)
 			return fs.SkipDir
 		}
 
@@ -120,6 +132,7 @@ func (s *Scanner) walkRoot(root config.Root, repoChan chan<- string) error {
 			depth = strings.Count(relPath, string(filepath.Separator)) + 1
 		}
 		if depth > root.MaxDepth {
+			logger.Debug("Skipping directory (max depth %d reached): %s", root.MaxDepth, path)
 			return fs.SkipDir
 		}
 
@@ -127,6 +140,7 @@ func (s *Scanner) walkRoot(root config.Root, repoChan chan<- string) error {
 		gitPath := filepath.Join(path, ".git")
 		if _, err := os.Stat(gitPath); err == nil {
 			// This is a git repo, process it
+			logger.Debug("Found git repository: %s", path)
 			repoChan <- path
 			// Don't descend into this repo
 			return fs.SkipDir
@@ -275,6 +289,47 @@ func (s *Scanner) findRoot(repoPath string) (string, string) {
 	}
 
 	return bestMatch.name, bestMatch.relPath
+}
+
+// isExcluded checks if a directory should be excluded based on patterns
+// Supports both exact matches and glob patterns (e.g., "**/node_modules")
+func (s *Scanner) isExcluded(dirName, fullPath, rootPath string, excludes []string) bool {
+	// Get relative path from root for pattern matching
+	relPath, err := filepath.Rel(rootPath, fullPath)
+	if err != nil {
+		relPath = dirName
+	}
+
+	for _, pattern := range excludes {
+		// Try exact basename match first (fast path)
+		if pattern == dirName {
+			return true
+		}
+
+		// Try glob pattern match on basename
+		if matched, _ := filepath.Match(pattern, dirName); matched {
+			return true
+		}
+
+		// Try glob pattern match on relative path
+		if matched, _ := filepath.Match(pattern, relPath); matched {
+			return true
+		}
+
+		// Try glob pattern match on full relative path with ** support
+		// Convert ** to match any path components
+		if strings.Contains(pattern, "**") {
+			// Simple ** handling: "**/<name>" matches any depth
+			if strings.HasPrefix(pattern, "**/") {
+				suffix := pattern[3:]
+				if strings.HasSuffix(relPath, suffix) || dirName == suffix {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // extractReadmeDescription extracts a description from README.md
