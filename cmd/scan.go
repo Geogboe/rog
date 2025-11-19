@@ -17,6 +17,7 @@ var (
 	scanRemote      bool
 	scanLLM         bool
 	scanRefreshMeta bool
+	scanDryRun      bool
 )
 
 var scanCmd = &cobra.Command{
@@ -31,6 +32,7 @@ By default, this performs local-only operations:
   - Reads metadata files (.rogmeta.yml)
 
 Flags:
+  --dry-run: Show scan metrics without processing (for debugging performance)
   --remote: Fetch remote status (ahead/behind) - requires network
   --llm: Use LLM to generate descriptions/tags for repos missing them
   --refresh-meta: Allow LLM to update previously generated metadata`,
@@ -39,6 +41,7 @@ Flags:
 
 func init() {
 	rootCmd.AddCommand(scanCmd)
+	scanCmd.Flags().BoolVar(&scanDryRun, "dry-run", false, "Show scan metrics without processing (for debugging performance)")
 	scanCmd.Flags().BoolVar(&scanRemote, "remote", false, "Check remote status (ahead/behind)")
 	scanCmd.Flags().BoolVar(&scanLLM, "llm", false, "Use LLM to enrich metadata (use with --refresh-meta to update existing LLM metadata)")
 
@@ -74,11 +77,42 @@ func runScan(cmd *cobra.Command, args []string) {
 	fmt.Printf("Scanning %d roots...\n", len(cfg.Roots))
 
 	// Create scanner
-	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote)
+	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote).WithDryRun(scanDryRun)
 
 	// Scan repositories
 	if err := scan.Scan(); err != nil {
 		exitWithError("Scan failed: %v", err)
+	}
+
+	// Show metrics if dry-run
+	if scanDryRun {
+		metrics := scan.GetMetrics()
+		duration := metrics.EndTime.Sub(metrics.StartTime)
+
+		fmt.Printf("\n📊 Scan Metrics (Dry Run)\n")
+		fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+		fmt.Printf("⏱️  Duration:           %v\n", duration.Round(time.Millisecond))
+		fmt.Printf("📁 Total Directories:   %d\n", metrics.TotalDirs)
+		fmt.Printf("✓  Directories Scanned: %d\n", metrics.DirsScanned)
+		fmt.Printf("✗  Directories Excluded: %d\n", metrics.DirsExcluded)
+		fmt.Printf("⚠️  Directories Skipped:  %d (max depth)\n", metrics.DirsSkipped)
+		fmt.Printf("🔍 Repositories Found:   %d\n", metrics.ReposFound)
+		fmt.Printf("\n📈 Statistics:\n")
+		fmt.Printf("   Deepest Path:  %s (depth %d)\n", metrics.DeepestPath, metrics.DeepestDepth)
+		fmt.Printf("   Largest Dir:   %s (%d subdirs)\n", metrics.LargestDir, metrics.LargestDirSize)
+		fmt.Printf("\n⚡ Performance:\n")
+		fmt.Printf("   %.0f dirs/sec\n", float64(metrics.DirsScanned)/duration.Seconds())
+		fmt.Printf("   %.0f repos/sec\n", float64(metrics.ReposFound)/duration.Seconds())
+		fmt.Printf("   %.2f ms per dir\n", duration.Seconds()*1000.0/float64(metrics.DirsScanned))
+
+		if metrics.DirsExcluded > 0 {
+			excludePercent := float64(metrics.DirsExcluded) / float64(metrics.TotalDirs) * 100
+			fmt.Printf("\n💡 %.1f%% of directories were excluded (saved %.1fs)\n",
+				excludePercent,
+				float64(metrics.DirsExcluded)*duration.Seconds()/float64(metrics.DirsScanned))
+		}
+
+		return
 	}
 
 	// Remove stale entries

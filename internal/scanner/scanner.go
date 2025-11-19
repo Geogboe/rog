@@ -3,12 +3,12 @@ package scanner
 import (
 	"bufio"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/git"
@@ -24,6 +24,24 @@ type Scanner struct {
 	globalMeta  *metadata.GlobalMeta
 	checkRemote bool
 	workers     int
+	dryRun      bool
+	metrics     *ScanMetrics
+}
+
+// ScanMetrics tracks scanning statistics
+type ScanMetrics struct {
+	DirsScanned    int
+	DirsExcluded   int
+	DirsSkipped    int // max depth
+	ReposFound     int
+	TotalDirs      int
+	DeepestPath    string
+	DeepestDepth   int
+	LargestDir     string
+	LargestDirSize int // subdirs count
+	StartTime      time.Time
+	EndTime        time.Time
+	mu             sync.Mutex
 }
 
 // New creates a new scanner
@@ -32,6 +50,7 @@ func New(cfg *config.Config, idx *index.Index) *Scanner {
 		cfg:     cfg,
 		idx:     idx,
 		workers: runtime.NumCPU() * 2,
+		metrics: &ScanMetrics{},
 	}
 }
 
@@ -41,8 +60,24 @@ func (s *Scanner) WithRemoteCheck(enabled bool) *Scanner {
 	return s
 }
 
+// WithDryRun enables dry-run mode (collect metrics without processing)
+func (s *Scanner) WithDryRun(enabled bool) *Scanner {
+	s.dryRun = enabled
+	return s
+}
+
+// GetMetrics returns scanning metrics
+func (s *Scanner) GetMetrics() *ScanMetrics {
+	return s.metrics
+}
+
 // Scan scans all configured roots for git repositories
 func (s *Scanner) Scan() error {
+	s.metrics.StartTime = time.Now()
+	defer func() {
+		s.metrics.EndTime = time.Now()
+	}()
+
 	// Load global metadata
 	globalMeta, err := metadata.LoadGlobalMeta()
 	if err != nil {
@@ -57,16 +92,29 @@ func (s *Scanner) Scan() error {
 	repoChan := make(chan string, 100)
 	var wg sync.WaitGroup
 
-	// Start worker pool for processing repos
-	for i := 0; i < s.workers; i++ {
+	// Start worker pool for processing repos (only if not dry-run)
+	if !s.dryRun {
+		for i := 0; i < s.workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for repoPath := range repoChan {
+					logger.Debug("Processing repository: %s", repoPath)
+					if err := s.processRepo(repoPath); err != nil {
+						logger.Verbose("Failed to process %s: %v", repoPath, err)
+					}
+				}
+			}()
+		}
+	} else {
+		// In dry-run mode, just count repos
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for repoPath := range repoChan {
-				logger.Debug("Processing repository: %s", repoPath)
-				if err := s.processRepo(repoPath); err != nil {
-					logger.Verbose("Failed to process %s: %v", repoPath, err)
-				}
+			for range repoChan {
+				s.metrics.mu.Lock()
+				s.metrics.ReposFound++
+				s.metrics.mu.Unlock()
 			}
 		}()
 	}
@@ -78,7 +126,7 @@ func (s *Scanner) Scan() error {
 		go func(r config.Root) {
 			defer rootWg.Done()
 			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, r.Path, r.MaxDepth)
-			if err := s.walkRoot(r, repoChan); err != nil {
+			if err := s.walkRootParallel(r, repoChan); err != nil {
 				logger.Verbose("Failed to walk root %s: %v", r.Name, err)
 			}
 		}(root)
@@ -94,60 +142,113 @@ func (s *Scanner) Scan() error {
 	return nil
 }
 
-// walkRoot walks a single root directory
-func (s *Scanner) walkRoot(root config.Root, repoChan chan<- string) error {
+// walkRootParallel walks a single root directory with parallel subdirectory exploration
+func (s *Scanner) walkRootParallel(root config.Root, repoChan chan<- string) error {
 	// Merge global excludes with root-specific excludes
 	excludes := make([]string, 0, len(s.cfg.GlobalExcludes)+len(root.Exclude))
 	excludes = append(excludes, s.cfg.GlobalExcludes...)
 	excludes = append(excludes, root.Exclude...)
 
-	return filepath.WalkDir(root.Path, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			// Skip inaccessible directories
-			if d != nil && d.IsDir() {
-				return fs.SkipDir
-			}
-			return nil
-		}
+	// Semaphore to limit concurrent directory reads
+	sem := make(chan struct{}, runtime.NumCPU()*4)
+	var walkWg sync.WaitGroup
 
-		// Skip non-directories
-		if !d.IsDir() {
-			return nil
-		}
+	// Recursive parallel walker
+	var walkDir func(path string, depth int)
+	walkDir = func(path string, depth int) {
+		defer walkWg.Done()
 
-		// Check if excluded (supports glob patterns)
-		if s.isExcluded(d.Name(), path, root.Path, excludes) {
-			logger.Debug("Skipping excluded directory: %s", path)
-			return fs.SkipDir
+		// Track metrics
+		s.metrics.mu.Lock()
+		s.metrics.DirsScanned++
+		s.metrics.TotalDirs++
+		if depth > s.metrics.DeepestDepth {
+			s.metrics.DeepestDepth = depth
+			s.metrics.DeepestPath = path
 		}
+		s.metrics.mu.Unlock()
 
 		// Check max depth
-		relPath, err := filepath.Rel(root.Path, path)
-		if err != nil {
-			return nil
-		}
-		depth := 0
-		if relPath != "." {
-			// Count path separators to determine depth
-			depth = strings.Count(relPath, string(filepath.Separator)) + 1
-		}
 		if depth > root.MaxDepth {
+			s.metrics.mu.Lock()
+			s.metrics.DirsSkipped++
+			s.metrics.mu.Unlock()
 			logger.Debug("Skipping directory (max depth %d reached): %s", root.MaxDepth, path)
-			return fs.SkipDir
+			return
 		}
 
-		// Check if directory contains .git (making it a git repo)
+		// Check if this is a git repo
 		gitPath := filepath.Join(path, ".git")
 		if _, err := os.Stat(gitPath); err == nil {
-			// This is a git repo, process it
 			logger.Debug("Found git repository: %s", path)
 			repoChan <- path
-			// Don't descend into this repo
-			return fs.SkipDir
+			s.metrics.mu.Lock()
+			s.metrics.ReposFound++
+			s.metrics.mu.Unlock()
+			// Don't descend into git repos
+			return
 		}
 
-		return nil
-	})
+		// Read directory entries
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			// Permission denied or other error - skip this directory
+			return
+		}
+
+		// Track largest directory
+		subdirCount := 0
+		for _, entry := range entries {
+			if entry.IsDir() {
+				subdirCount++
+			}
+		}
+		if subdirCount > 0 {
+			s.metrics.mu.Lock()
+			if subdirCount > s.metrics.LargestDirSize {
+				s.metrics.LargestDirSize = subdirCount
+				s.metrics.LargestDir = path
+			}
+			s.metrics.mu.Unlock()
+		}
+
+		// Process subdirectories in parallel
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+
+			dirName := entry.Name()
+			fullPath := filepath.Join(path, dirName)
+
+			// Check if excluded
+			if s.isExcluded(dirName, fullPath, root.Path, excludes) {
+				logger.Debug("Skipping excluded directory: %s", fullPath)
+				s.metrics.mu.Lock()
+				s.metrics.DirsExcluded++
+				s.metrics.TotalDirs++ // Count it but don't scan it
+				s.metrics.mu.Unlock()
+				continue
+			}
+
+			// Acquire semaphore and spawn goroutine for subdirectory
+			sem <- struct{}{}
+			walkWg.Add(1)
+			go func(subPath string, d int) {
+				defer func() { <-sem }()
+				walkDir(subPath, d)
+			}(fullPath, depth+1)
+		}
+	}
+
+	// Start walking from root
+	walkWg.Add(1)
+	go walkDir(root.Path, 0)
+
+	// Wait for all walking to complete
+	walkWg.Wait()
+
+	return nil
 }
 
 // processRepo processes a single repository

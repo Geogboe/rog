@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -13,6 +14,7 @@ import (
 
 var (
 	configValidate bool
+	configEdit     bool
 )
 
 var configCmd = &cobra.Command{
@@ -22,21 +24,29 @@ var configCmd = &cobra.Command{
 
 By default, displays the current configuration.
 Use --validate to check for configuration errors.
+Use --edit to open config in your editor.
 
 Examples:
   rog config                  Show current config
-  rog config --validate       Validate config file`,
+  rog config --validate       Validate config file
+  rog config --edit           Edit config in $EDITOR`,
 	Run: runConfig,
 }
 
 func init() {
 	rootCmd.AddCommand(configCmd)
 	configCmd.Flags().BoolVar(&configValidate, "validate", false, "Validate configuration file")
+	configCmd.Flags().BoolVar(&configEdit, "edit", false, "Edit configuration file in editor")
 }
 
 func runConfig(cmd *cobra.Command, args []string) {
 	if configValidate {
 		validateConfig()
+		return
+	}
+
+	if configEdit {
+		editConfig()
 		return
 	}
 
@@ -202,6 +212,55 @@ func showConfig() {
 	}
 
 	fmt.Print(string(data))
+}
+
+func editConfig() {
+	// Get config path
+	configPath := os.Getenv("ROG_CONFIG")
+	if configPath == "" {
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir == "" {
+			homeDir, _ := os.UserHomeDir()
+			configDir = filepath.Join(homeDir, ".config")
+		}
+		configPath = filepath.Join(configDir, "rog", "config.yml")
+	}
+
+	// Ensure config exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// Create default config
+		cfg := config.DefaultConfig()
+		if err := config.Save(cfg); err != nil {
+			exitWithError("Failed to create config: %v", err)
+		}
+		fmt.Printf("Created default config at %s\n", configPath)
+	}
+
+	// Get editor
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	// Open in editor
+	cmd := exec.Command(editor, configPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		exitWithError("Failed to open editor: %v", err)
+	}
+
+	// Validate after editing
+	fmt.Println("\nValidating config...")
+	if cfg, err := config.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Warning: Config has errors: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Run 'rog config --validate' for details\n")
+		os.Exit(1)
+	} else {
+		fmt.Printf("✓ Config is valid (%d roots)\n", len(cfg.Roots))
+	}
 }
 
 func checkDirPermissions(path string) error {
