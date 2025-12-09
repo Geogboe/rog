@@ -166,8 +166,8 @@ func validateConfig() {
 
 	// Print results
 	if len(errors) > 0 {
-		fmt.Println("✗ Configuration validation failed\n")
-		fmt.Println("Errors:")
+		fmt.Println("✗ Configuration validation failed")
+		fmt.Println("\nErrors:")
 		for _, err := range errors {
 			fmt.Printf("  • %s\n", err)
 		}
@@ -181,8 +181,8 @@ func validateConfig() {
 	}
 
 	if len(warnings) > 0 {
-		fmt.Println("✓ Configuration is valid (with warnings)\n")
-		fmt.Println("Warnings:")
+		fmt.Println("✓ Configuration is valid (with warnings)")
+		fmt.Println("\nWarnings:")
 		for _, warn := range warnings {
 			fmt.Printf("  • %s\n", warn)
 		}
