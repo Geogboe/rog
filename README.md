@@ -42,6 +42,35 @@ cd "$(rog path myproject)"
 
 ## Installation
 
+### Pre-built Binaries (Recommended)
+
+Download the latest release for your platform from the [releases page](https://github.com/Geogboe/rog/releases):
+
+```bash
+# Linux (amd64)
+curl -L https://github.com/Geogboe/rog/releases/latest/download/rog-VERSION-linux-amd64.tar.gz | tar xz
+sudo mv rog-linux-amd64 /usr/local/bin/rog
+
+# macOS (Apple Silicon)
+curl -L https://github.com/Geogboe/rog/releases/latest/download/rog-VERSION-darwin-arm64.tar.gz | tar xz
+sudo mv rog-darwin-arm64 /usr/local/bin/rog
+
+# macOS (Intel)
+curl -L https://github.com/Geogboe/rog/releases/latest/download/rog-VERSION-darwin-amd64.tar.gz | tar xz
+sudo mv rog-darwin-amd64 /usr/local/bin/rog
+
+# Windows (PowerShell)
+# Download from releases page and extract to a directory in your PATH
+```
+
+Replace `VERSION` with the actual version number (e.g., `v1.0.0`).
+
+### Using Go Install
+
+```bash
+go install github.com/Geogboe/rog@latest
+```
+
 ### From Source
 
 ```bash
@@ -49,12 +78,6 @@ git clone https://github.com/Geogboe/rog
 cd rog
 go build -o rog .
 sudo mv rog /usr/local/bin/
-```
-
-### Using Go Install
-
-```bash
-go install github.com/Geogboe/rog@latest
 ```
 
 ## Usage
