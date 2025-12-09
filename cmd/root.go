@@ -51,18 +51,30 @@ func Execute() error {
 	// If we get an "unknown command" error and there are args,
 	// treat it as an alias for "rog list <args>"
 	if err != nil && strings.Contains(err.Error(), "unknown command") {
-		// Get original args (skip program name)
-		args := os.Args[1:]
+		// Extract the unknown command from the error message
+		// Error format: unknown command "foo" for "rog"
+		unknownCmd := extractUnknownCommand(err.Error())
+		if unknownCmd != "" {
+			// Get original args (skip program name)
+			args := os.Args[1:]
 
-		// Only apply the alias if there are args and the first arg
-		// doesn't look like a flag
-		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-			// Prepend "list" to the arguments
-			newArgs := append([]string{"list"}, args...)
-			rootCmd.SetArgs(newArgs)
+			// Replace the unknown command with "list <unknownCmd>" in the args
+			// This handles cases like: rog -v foo -> rog -v list foo
+			newArgs := make([]string, 0, len(args)+1)
+			cmdInserted := false
+			for _, arg := range args {
+				if !cmdInserted && arg == unknownCmd {
+					newArgs = append(newArgs, "list", unknownCmd)
+					cmdInserted = true
+				} else {
+					newArgs = append(newArgs, arg)
+				}
+			}
 
-			// Execute with the list command - error already suppressed
-			return rootCmd.Execute()
+			if cmdInserted {
+				rootCmd.SetArgs(newArgs)
+				return rootCmd.Execute()
+			}
 		}
 
 		// If we couldn't handle it as an alias, print the error
@@ -76,6 +88,24 @@ func Execute() error {
 	}
 
 	return err
+}
+
+// extractUnknownCommand extracts the command name from an "unknown command" error
+// Error format: unknown command "foo" for "rog"
+func extractUnknownCommand(errMsg string) string {
+	// Look for the pattern: unknown command "xxx"
+	start := strings.Index(errMsg, "unknown command \"")
+	if start == -1 {
+		return ""
+	}
+	start += len("unknown command \"")
+
+	end := strings.Index(errMsg[start:], "\"")
+	if end == -1 {
+		return ""
+	}
+
+	return errMsg[start : start+end]
 }
 
 func init() {
