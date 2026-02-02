@@ -4,7 +4,13 @@ This document describes the automated release process for `rog`.
 
 ## Overview
 
-The project uses GitHub Actions to automatically build and release binaries for multiple platforms when a version tag is pushed.
+The project uses:
+
+- **CI** (`.github/workflows/test.yml`) to validate pushes and pull requests
+- **Release Please** (`.github/workflows/release-please.yml`) to manage versioning, changelog updates, tags, and GitHub releases
+- **GoReleaser** (`.goreleaser.yaml`) to build and upload release artifacts
+
+Releases are created from changes merged into `main`. You do not create tags manually.
 
 ## Supported Platforms
 
@@ -21,25 +27,22 @@ The release pipeline builds binaries for the following platforms:
 
 ## Creating a Release
 
-To create a new release:
+To cut a release:
 
-1. Ensure all changes are committed and pushed to the main branch
-2. Create and push a version tag:
+1. Use Conventional Commits in merged PRs (`feat:`, `fix:`, etc.).
+2. Push/merge changes to `main`.
+3. Release Please will open or update a **release PR** with:
+   - version bumps
+   - changelog updates
+4. Merge the release PR.
+5. GitHub Actions will automatically:
+   - create a version tag and GitHub release
+   - run GoReleaser
+   - publish archives and `checksums.txt` to the release
 
-```bash
-# Create a tag (use semantic versioning)
-git tag -a v1.0.0 -m "Release v1.0.0"
+### First Release and Pre-release Track
 
-# Push the tag to GitHub
-git push origin v1.0.0
-```
-
-3. The GitHub Actions workflow will automatically:
-   - Build binaries for all supported platforms
-   - Create compressed archives (`.tar.gz` for Unix, `.zip` for Windows)
-   - Generate SHA256 checksums
-   - Create a GitHub release with all artifacts
-   - Auto-generate release notes from commits
+The repository is configured for a pre-release stream starting at `v0.1.0` using the identifier `prerelease` (for example, `v0.1.0-prerelease.1`).
 
 ## Release Artifacts
 
@@ -62,50 +65,36 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 ## Pre-releases
 
-To create a pre-release (alpha, beta, rc):
-
-```bash
-# Tag with pre-release identifier
-git tag -a v1.0.0-beta.1 -m "Beta release"
-git push origin v1.0.0-beta.1
-```
-
-The workflow will automatically mark releases with pre-release identifiers as pre-releases on GitHub.
+Pre-release versions are generated automatically by Release Please based on repository configuration. While pre-release mode is enabled, releases are marked as pre-releases in GitHub.
 
 ## Testing Releases Locally
 
-Before creating a release tag, you can test the build process locally:
+Before merging a release PR, you can test locally:
 
 ```bash
-# Test cross-compilation for all platforms
-make test-build  # If Makefile exists
+# CI checks
+go vet ./...
+go test ./...
 
-# Or manually test each platform
-GOOS=linux GOARCH=amd64 go build -o rog-linux-amd64 -ldflags="-s -w" .
-GOOS=linux GOARCH=arm64 go build -o rog-linux-arm64 -ldflags="-s -w" .
-GOOS=darwin GOARCH=amd64 go build -o rog-darwin-amd64 -ldflags="-s -w" .
-GOOS=darwin GOARCH=arm64 go build -o rog-darwin-arm64 -ldflags="-s -w" .
-GOOS=windows GOARCH=amd64 go build -o rog-windows-amd64.exe -ldflags="-s -w" .
+# Local GoReleaser snapshot build (no publish)
+goreleaser release --snapshot --clean
 ```
 
 ## Workflow Configuration
 
-The release workflow is defined in `.github/workflows/release.yml` and:
-
-- Triggers on any tag matching `v*`
-- Uses Go 1.24.7 (matching go.mod)
-- Applies build optimizations with `-ldflags="-s -w"` to reduce binary size
-- Creates release artifacts with checksums
-- Automatically generates release notes from commits
+- `.github/workflows/test.yml`: tests and cross-platform build checks
+- `.github/workflows/release-please.yml`: runs release-please on pushes to `main`
+- `release-please-config.json` + `.release-please-manifest.json`: release strategy
+- `.goreleaser.yaml`: build matrix, archives, checksum, release behavior
 
 ## Troubleshooting
 
 ### Release Workflow Failed
 
 1. Check the [Actions tab](https://github.com/Geogboe/rog/actions) for error details
-2. Verify the tag name starts with `v` (e.g., `v1.0.0`)
-3. Ensure all tests pass before creating the release tag
-4. Check that the Go version in the workflow matches `go.mod`
+2. Confirm the release PR was merged into `main`
+3. Ensure the workflow has `contents: write` permissions
+4. Check that the Go version in workflows matches `go.mod`
 
 ### Missing Binaries
 
@@ -119,26 +108,6 @@ If some binaries are missing from the release:
 
 To modify the release process:
 
-1. Edit `.github/workflows/release.yml`
+1. Edit `.github/workflows/release-please.yml` and/or `.goreleaser.yaml`
 2. Test changes by pushing to a feature branch
-3. Create a test tag (e.g., `v0.0.0-test`) to verify the workflow
-4. Delete the test release and tag after verification
-
-## Manual Release (Fallback)
-
-If the automated workflow fails, you can create a release manually:
-
-```bash
-# Build all binaries
-./scripts/build-all.sh  # Create this if needed
-
-# Create archives
-tar -czf rog-v1.0.0-linux-amd64.tar.gz rog-linux-amd64
-# ... repeat for other platforms
-
-# Generate checksums
-sha256sum rog-v1.0.0-*.tar.gz rog-v1.0.0-*.zip > checksums.txt
-
-# Create release via GitHub web interface
-# Upload all artifacts manually
-```
+3. Use `workflow_dispatch` on `release-please.yml` for ad hoc verification if needed

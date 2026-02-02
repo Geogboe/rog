@@ -1,0 +1,42 @@
+version: 2
+
+project_name: rog
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: rog
+    main: .
+    binary: rog
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: rog-archives
+    builds:
+      - rog
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+release:
+  prerelease: auto
