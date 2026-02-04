@@ -23,8 +23,12 @@ func TestScanPerformanceDeepNesting(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// Create deep nesting: 10 levels deep with 5 directories per level
-	// This simulates a real workspace with nested projects
+	// Create deep nesting with bounded growth.
+	// 4 levels x 4 branches yields 340 directories total, which is large enough
+	// to exercise traversal performance without causing CI timeouts.
+	const maxDepth = 4
+	const branchFactor = 4
+
 	repoCount := 0
 	dirCount := 0
 
@@ -41,8 +45,9 @@ func TestScanPerformanceDeepNesting(t *testing.T) {
 			os.MkdirAll(dirPath, 0755)
 			dirCount++
 
-			// Create a git repo in some directories (every 3rd directory)
-			if i%3 == 0 {
+			// Only create repos at leaf nodes so nested repo pruning
+			// does not change the expected repo count.
+			if depth == maxDepth && i%2 == 0 {
 				initGitRepo(t, dirPath)
 				os.WriteFile(filepath.Join(dirPath, "main.go"), []byte("package main"), 0644)
 				commitFiles(t, dirPath, "init")
@@ -56,7 +61,7 @@ func TestScanPerformanceDeepNesting(t *testing.T) {
 
 	t.Logf("Creating nested directory structure...")
 	start := time.Now()
-	createNestedDirs(tmpDir, 1, 10, 5)
+	createNestedDirs(tmpDir, 1, maxDepth, branchFactor)
 	setupDuration := time.Since(start)
 	t.Logf("Created %d directories and %d repos in %v", dirCount, repoCount, setupDuration)
 
