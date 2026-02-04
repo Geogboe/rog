@@ -42,18 +42,20 @@ To cut a release:
 
 ### First Release and Pre-release Track
 
-The repository is configured for a pre-release stream starting at `v0.1.0` using the identifier `prerelease` (for example, `v0.1.0-prerelease.1`).
+The repository is configured with Release Please prerelease settings and currently has `v0.1.0` published as a GitHub prerelease.
 
 ## Release Artifacts
 
 Each release includes:
 
-- `rog-VERSION-linux-amd64.tar.gz` - Linux x86_64 binary
-- `rog-VERSION-linux-arm64.tar.gz` - Linux ARM64 binary
-- `rog-VERSION-darwin-amd64.tar.gz` - macOS Intel binary
-- `rog-VERSION-darwin-arm64.tar.gz` - macOS Apple Silicon binary
-- `rog-VERSION-windows-amd64.zip` - Windows x86_64 binary
+- `rog-<version>-linux-amd64.tar.gz` - Linux x86_64 binary
+- `rog-<version>-linux-arm64.tar.gz` - Linux ARM64 binary
+- `rog-<version>-darwin-amd64.tar.gz` - macOS Intel binary
+- `rog-<version>-darwin-arm64.tar.gz` - macOS Apple Silicon binary
+- `rog-<version>-windows-amd64.zip` - Windows x86_64 binary
 - `checksums.txt` - SHA256 checksums for all archives
+
+`<version>` is the numeric version without `v` (example: `0.1.0`).
 
 ## Versioning
 
@@ -93,8 +95,11 @@ goreleaser release --snapshot --clean
 
 1. Check the [Actions tab](https://github.com/Geogboe/rog/actions) for error details
 2. Confirm the release PR was merged into `main`
-3. Ensure the workflow has `contents: write` permissions
-4. Check that the Go version in workflows matches `go.mod`
+3. Ensure repository settings allow Actions to create PRs:
+   - Settings -> Actions -> General -> Workflow permissions: **Read and write permissions**
+   - **Allow GitHub Actions to create and approve pull requests** is enabled
+4. Ensure release workflow/job permissions include `contents: write` and `pull-requests: write`
+5. Check that the Go version in workflows matches `go.mod`
 
 ### Missing Binaries
 

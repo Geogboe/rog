@@ -47,23 +47,26 @@ cd "$(rog path myproject)"
 Download the latest release for your platform from the [releases page](https://github.com/Geogboe/rog/releases):
 
 ```bash
+TAG=v0.1.0
+VERSION="${TAG#v}"
+
 # Linux (amd64)
-curl -L https://github.com/Geogboe/rog/releases/latest/download/rog-VERSION-linux-amd64.tar.gz | tar xz
+curl -L "https://github.com/Geogboe/rog/releases/download/${TAG}/rog-${VERSION}-linux-amd64.tar.gz" | tar xz
 sudo mv rog-linux-amd64 /usr/local/bin/rog
 
 # macOS (Apple Silicon)
-curl -L https://github.com/Geogboe/rog/releases/latest/download/rog-VERSION-darwin-arm64.tar.gz | tar xz
+curl -L "https://github.com/Geogboe/rog/releases/download/${TAG}/rog-${VERSION}-darwin-arm64.tar.gz" | tar xz
 sudo mv rog-darwin-arm64 /usr/local/bin/rog
 
 # macOS (Intel)
-curl -L https://github.com/Geogboe/rog/releases/latest/download/rog-VERSION-darwin-amd64.tar.gz | tar xz
+curl -L "https://github.com/Geogboe/rog/releases/download/${TAG}/rog-${VERSION}-darwin-amd64.tar.gz" | tar xz
 sudo mv rog-darwin-amd64 /usr/local/bin/rog
 
 # Windows (PowerShell)
 # Download from releases page and extract to a directory in your PATH
 ```
 
-Replace `VERSION` with the actual version number (e.g., `v1.0.0`).
+Set `TAG` to the release tag you want (for example, `v0.1.0`). Artifact names use the numeric part (`0.1.0`).
 
 ### Using Go Install
 
