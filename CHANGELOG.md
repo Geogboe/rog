@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/Geogboe/rog/compare/v0.1.0...v0.2.0) (2026-03-24)
+
+
+### Features
+
+* **install:** add install scripts for Linux/macOS and Windows ([9c92713](https://github.com/Geogboe/rog/commit/9c9271342f286e6f27af186fea3e4512f00a441f))
+
 ## 0.1.0 (2026-02-04)
 
 
