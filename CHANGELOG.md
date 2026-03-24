@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Geogboe/rog/compare/v0.2.0...v0.3.0) (2026-03-24)
+
+
+### Features
+
+* **version:** add version command to display installed version ([03a079e](https://github.com/Geogboe/rog/commit/03a079eebace4dca6bd7fc9310f814b585a21fd9))
+
 ## [0.2.0](https://github.com/Geogboe/rog/compare/v0.1.0...v0.2.0) (2026-03-24)
 
 
