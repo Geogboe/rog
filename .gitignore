@@ -32,5 +32,22 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev tool settings
+.claude/
+.cursor/
+.windsurf/
+
+# Local config overrides
+*.local
+config.local.yaml
+config.local.yml

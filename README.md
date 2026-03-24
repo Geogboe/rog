@@ -44,29 +44,34 @@ cd "$(rog path myproject)"
 
 ### Pre-built Binaries (Recommended)
 
-Download the latest release for your platform from the [releases page](https://github.com/Geogboe/rog/releases):
+**Linux / macOS:**
 
 ```bash
-TAG=v0.1.0
-VERSION="${TAG#v}"
-
-# Linux (amd64)
-curl -L "https://github.com/Geogboe/rog/releases/download/${TAG}/rog-${VERSION}-linux-amd64.tar.gz" | tar xz
-sudo mv rog-linux-amd64 /usr/local/bin/rog
-
-# macOS (Apple Silicon)
-curl -L "https://github.com/Geogboe/rog/releases/download/${TAG}/rog-${VERSION}-darwin-arm64.tar.gz" | tar xz
-sudo mv rog-darwin-arm64 /usr/local/bin/rog
-
-# macOS (Intel)
-curl -L "https://github.com/Geogboe/rog/releases/download/${TAG}/rog-${VERSION}-darwin-amd64.tar.gz" | tar xz
-sudo mv rog-darwin-amd64 /usr/local/bin/rog
-
-# Windows (PowerShell)
-# Download from releases page and extract to a directory in your PATH
+curl -fsSL https://raw.githubusercontent.com/Geogboe/rog/main/install.sh | bash
 ```
 
-Set `TAG` to the release tag you want (for example, `v0.1.0`). Artifact names use the numeric part (`0.1.0`).
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/Geogboe/rog/main/install.ps1 | iex
+```
+
+Installs to `~/.local/bin` and verifies the SHA256 checksum from the release.
+
+**Options (environment variables):**
+
+| Variable | Description | Default |
+|---|---|---|
+| `ROG_VERSION` | Install a specific version (e.g. `v0.2.0`) | Latest release |
+| `ROG_INSTALL_DIR` | Override install directory | `~/.local/bin` |
+| `ROG_DEBUG` | Set to `1` for verbose output | Off |
+
+Example — pin a version:
+```bash
+ROG_VERSION=v0.1.0 curl -fsSL https://raw.githubusercontent.com/Geogboe/rog/main/install.sh | bash
+```
+
+You can also download binaries directly from the [releases page](https://github.com/Geogboe/rog/releases).
 
 ### Using Go Install
 
