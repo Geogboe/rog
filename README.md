@@ -84,7 +84,7 @@ go install github.com/Geogboe/rog@latest
 ```bash
 git clone https://github.com/Geogboe/rog
 cd rog
-go build -o rog .
+go build -ldflags="-X github.com/Geogboe/rog/cmd.version=$(git describe --tags --always --dirty)" -o rog .
 sudo mv rog /usr/local/bin/
 ```
 
@@ -113,6 +113,9 @@ rog open myproject
 
 # Get path (for scripting)
 cd "$(rog path api)"
+
+# Show installed version
+rog version
 ```
 
 ### Interactive Selection

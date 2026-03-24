@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -170,7 +171,7 @@ func TestLanguagePrecedence(t *testing.T) {
 
 	// Create many C files
 	for i := 0; i < 10; i++ {
-		filename := filepath.Join(tmpDir, "file"+string(rune('0'+i))+".c")
+		filename := filepath.Join(tmpDir, fmt.Sprintf("file%d.c", i))
 		err := os.WriteFile(filename, []byte("// C"), 0644)
 		require.NoError(t, err)
 	}
@@ -240,7 +241,7 @@ func TestSubdirectoryScanning(t *testing.T) {
 
 	// Put most Go files in subdirectory
 	for i := 0; i < 5; i++ {
-		filename := filepath.Join(subDir, "file"+string(rune('0'+i))+".go")
+		filename := filepath.Join(subDir, fmt.Sprintf("file%d.go", i))
 		err := os.WriteFile(filename, []byte("package pkg"), 0644)
 		require.NoError(t, err)
 	}
@@ -263,7 +264,7 @@ func TestVendorDirectorySkipped(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := 0; i < 20; i++ {
-		filename := filepath.Join(vendorDir, "file"+string(rune('0'+i))+".c")
+		filename := filepath.Join(vendorDir, fmt.Sprintf("file%d.c", i))
 		err := os.WriteFile(filename, []byte("// C"), 0644)
 		require.NoError(t, err)
 	}

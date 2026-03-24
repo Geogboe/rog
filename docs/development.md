@@ -228,10 +228,10 @@ All tests are:
 
 ```bash
 # Development build
-go build -o rog .
+go build -ldflags="-X github.com/Geogboe/rog/cmd.version=$(git describe --tags --always --dirty)" -o rog .
 
 # Optimized build
-go build -ldflags="-s -w" -o rog .
+go build -ldflags="-s -w -X github.com/Geogboe/rog/cmd.version=$(git describe --tags --always --dirty)" -o rog .
 
 # Install globally
 go install github.com/Geogboe/rog@latest

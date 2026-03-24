@@ -10,6 +10,8 @@ builds:
   - id: rog
     main: .
     binary: rog
+    ldflags:
+      - "-s -w -X github.com/Geogboe/rog/cmd.version={{ .Version }}"
     env:
       - CGO_ENABLED=0
     goos:
