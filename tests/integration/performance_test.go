@@ -15,11 +15,21 @@ import (
 	"github.com/Geogboe/rog/internal/scanner"
 )
 
-// TestScanPerformanceDeepNesting tests scanning with deep directory nesting
-func TestScanPerformanceDeepNesting(t *testing.T) {
+func requirePerformanceTestsEnabled(t *testing.T) {
+	t.Helper()
+
 	if testing.Short() {
 		t.Skip("Skipping performance test in short mode")
 	}
+
+	if os.Getenv("ROG_RUN_PERF_TESTS") != "1" {
+		t.Skip("Skipping performance test; set ROG_RUN_PERF_TESTS=1 to enable")
+	}
+}
+
+// TestScanPerformanceDeepNesting tests scanning with deep directory nesting
+func TestScanPerformanceDeepNesting(t *testing.T) {
+	requirePerformanceTestsEnabled(t)
 
 	tmpDir := t.TempDir()
 
@@ -103,9 +113,7 @@ func TestScanPerformanceDeepNesting(t *testing.T) {
 
 // TestScanPerformanceWideShallow tests scanning with many directories at shallow depth
 func TestScanPerformanceWideShallow(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping performance test in short mode")
-	}
+	requirePerformanceTestsEnabled(t)
 
 	tmpDir := t.TempDir()
 
@@ -167,9 +175,7 @@ func TestScanPerformanceWideShallow(t *testing.T) {
 
 // TestScanPerformanceWithExcludes tests scanning performance with many excludes
 func TestScanPerformanceWithExcludes(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping performance test in short mode")
-	}
+	requirePerformanceTestsEnabled(t)
 
 	tmpDir := t.TempDir()
 
