@@ -33,6 +33,9 @@ vi ~/.config/rog/config.yml
 # Scan repositories
 rog scan
 
+# Rich progress for interactive scans
+rog scan --progress rich
+
 # List all repos
 rog list
 
@@ -169,6 +172,19 @@ rog scan --llm
 rog scan --llm --refresh-meta
 ```
 
+### Scan Progress
+
+```bash
+# Auto-select the best progress mode (default)
+rog scan --progress auto
+
+# Force plain line-based output
+rog scan --progress plain
+
+# Disable progress updates
+rog scan --progress off
+```
+
 ## Configuration
 
 Default location: `~/.config/rog/config.yml`
@@ -200,6 +216,9 @@ roots:
 
 editor: code
 
+scan:
+  progress: auto
+
 llm:
   endpoint: http://localhost:11434/v1
   model: codellama
@@ -212,7 +231,19 @@ llm:
 - `roots[].exclude`: Root-specific excludes (added to global_excludes, not replacing)
 - `roots[].max_depth`: How deep to scan (default: 4)
 - `editor`: Editor command (default: `$EDITOR` or `vi`)
+- `scan.progress`: Scan progress mode (`auto`, `off`, `plain`, `rich`)
 - `llm`: Optional LLM configuration for metadata enrichment
+
+### Scan Progress Configuration
+
+Progress mode precedence is:
+
+1. `rog scan --progress <mode>`
+2. `ROG_PROGRESS`
+3. `scan.progress` in config
+4. Default: `auto`
+
+`auto` uses richer interactive progress when the terminal supports it and falls back to plain output otherwise.
 
 ### WSL Support (Windows)
 

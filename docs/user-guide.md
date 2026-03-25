@@ -36,6 +36,9 @@ vi ~/.config/rog/config.yml
 # 3. Scan your repositories
 rog scan
 
+# 3a. Use richer progress output when you want it
+rog scan --progress rich
+
 # 4. List all repositories
 rog list
 
@@ -74,6 +77,9 @@ rog scan --llm
 
 # Refresh existing LLM-generated metadata
 rog scan --llm --refresh-meta
+
+# Force plain progress output
+rog scan --progress plain
 ```
 
 **What it does:**
@@ -251,6 +257,9 @@ roots:
 
 editor: code
 
+scan:
+  progress: auto
+
 llm:
   endpoint: http://localhost:11434/v1
   model: codellama
@@ -274,6 +283,15 @@ List of directories to scan for repositories.
 
 Default editor command. Can be overridden by `ROG_EDITOR` or `EDITOR` env vars.
 
+#### `scan.progress` (optional)
+
+Controls scan progress rendering.
+
+- `auto`: use richer interactive progress when supported, otherwise fall back to plain output
+- `off`: disable progress updates
+- `plain`: static ASCII line-based progress
+- `rich`: interactive progress with optional ANSI color
+
 #### `llm` (optional)
 
 LLM configuration for enriching metadata.
@@ -290,10 +308,18 @@ Override configuration values:
 - `ROG_CONFIG`: Path to config file
 - `ROG_DATA`: Path to data directory (index.json location)
 - `ROG_EDITOR`: Editor command
+- `ROG_PROGRESS`: Scan progress mode (`auto`, `off`, `plain`, `rich`)
 - `ROG_LLM_ENDPOINT`: LLM API endpoint
 - `ROG_LLM_MODEL`: LLM model name
 - `ROG_LLM_API_KEY`: LLM API key
 - `ROG_LLM_EXTRA`: Extra LLM instructions
+
+Progress mode precedence is:
+
+1. `rog scan --progress <mode>`
+2. `ROG_PROGRESS`
+3. `scan.progress` in config
+4. Default: `auto`
 
 ## Metadata
 

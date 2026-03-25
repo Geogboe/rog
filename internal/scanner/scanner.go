@@ -36,6 +36,8 @@ type ScanMetrics struct {
 	DirsExcluded   int
 	DirsSkipped    int // max depth
 	ReposFound     int
+	RootsTotal     int
+	RootsCompleted int
 	TotalDirs      int
 	DeepestPath    string
 	DeepestDepth   int
@@ -73,12 +75,40 @@ func (s *Scanner) GetMetrics() *ScanMetrics {
 	return s.metrics
 }
 
+// SnapshotMetrics returns a consistent copy of the current scan metrics.
+func (s *Scanner) SnapshotMetrics() ScanMetrics {
+	s.metrics.mu.Lock()
+	defer s.metrics.mu.Unlock()
+
+	return ScanMetrics{
+		DirsScanned:    s.metrics.DirsScanned,
+		DirsExcluded:   s.metrics.DirsExcluded,
+		DirsSkipped:    s.metrics.DirsSkipped,
+		ReposFound:     s.metrics.ReposFound,
+		RootsTotal:     s.metrics.RootsTotal,
+		RootsCompleted: s.metrics.RootsCompleted,
+		TotalDirs:      s.metrics.TotalDirs,
+		DeepestPath:    s.metrics.DeepestPath,
+		DeepestDepth:   s.metrics.DeepestDepth,
+		LargestDir:     s.metrics.LargestDir,
+		LargestDirSize: s.metrics.LargestDirSize,
+		StartTime:      s.metrics.StartTime,
+		EndTime:        s.metrics.EndTime,
+	}
+}
+
 // Scan scans all configured roots for git repositories
 func (s *Scanner) Scan() error {
 	s.metrics.StartTime = time.Now()
 	defer func() {
 		s.metrics.EndTime = time.Now()
 	}()
+	s.metrics.mu.Lock()
+	s.metrics.RootsTotal = len(s.cfg.Roots)
+	for i := range s.cfg.Roots {
+		s.cfg.Roots[i].Path = normalizeScanPath(s.cfg.Roots[i].Path)
+	}
+	s.metrics.mu.Unlock()
 
 	// Load global metadata
 	globalMeta, err := metadata.LoadGlobalMeta()
@@ -133,6 +163,11 @@ func (s *Scanner) Scan() error {
 		rootWg.Add(1)
 		go func(r config.Root) {
 			defer rootWg.Done()
+			defer func() {
+				s.metrics.mu.Lock()
+				s.metrics.RootsCompleted++
+				s.metrics.mu.Unlock()
+			}()
 			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, r.Path, r.MaxDepth)
 
 			// Use fd if available, otherwise fall back to parallel walker
@@ -171,10 +206,10 @@ func isFdAvailable() bool {
 func (s *Scanner) walkRootWithFd(root config.Root, repoChan chan<- string) error {
 	// Build fd command
 	args := []string{
-		"-t", "d",        // type: directory
-		"-H",             // include hidden
+		"-t", "d", // type: directory
+		"-H", // include hidden
 		"--max-depth", fmt.Sprintf("%d", root.MaxDepth),
-		"-a", ".git",     // search for .git
+		"-a", ".git", // search for .git
 		root.Path,
 	}
 
@@ -184,6 +219,9 @@ func (s *Scanner) walkRootWithFd(root config.Root, repoChan chan<- string) error
 	excludes = append(excludes, root.Exclude...)
 
 	for _, exclude := range excludes {
+		if exclude == ".git" {
+			continue
+		}
 		args = append(args, "-E", exclude)
 	}
 
@@ -204,9 +242,10 @@ func (s *Scanner) walkRootWithFd(root config.Root, repoChan chan<- string) error
 		if gitPath == "" {
 			continue
 		}
+		gitPath = strings.TrimRight(gitPath, `\/`)
 
 		// Remove /.git suffix to get repo path
-		repoPath := filepath.Dir(gitPath)
+		repoPath := normalizeScanPath(filepath.Dir(gitPath))
 
 		s.metrics.mu.Lock()
 		s.metrics.ReposFound++
@@ -234,6 +273,7 @@ func (s *Scanner) walkRootParallel(root config.Root, repoChan chan<- string) err
 	var walkDir func(path string, depth int)
 	walkDir = func(path string, depth int) {
 		defer walkWg.Done()
+		path = normalizeScanPath(path)
 
 		// Track metrics
 		s.metrics.mu.Lock()
@@ -296,7 +336,7 @@ func (s *Scanner) walkRootParallel(root config.Root, repoChan chan<- string) err
 			}
 
 			dirName := entry.Name()
-			fullPath := filepath.Join(path, dirName)
+			fullPath := normalizeScanPath(filepath.Join(path, dirName))
 
 			// Check if excluded
 			if s.isExcluded(dirName, fullPath, root.Path, excludes) {
@@ -330,6 +370,8 @@ func (s *Scanner) walkRootParallel(root config.Root, repoChan chan<- string) err
 
 // processRepo processes a single repository
 func (s *Scanner) processRepo(repoPath string) error {
+	repoPath = normalizeScanPath(repoPath)
+
 	// Verify it's actually a git repo
 	if !git.IsGitRepo(repoPath) {
 		return fmt.Errorf("not a git repository")
@@ -441,24 +483,12 @@ func (s *Scanner) findRoot(repoPath string) (string, string) {
 	}
 
 	for _, root := range s.cfg.Roots {
-		if rel, err := filepath.Rel(root.Path, repoPath); err == nil {
-			// Check if this path is within the root (not outside with ..)
-			if len(rel) > 0 && rel[0] != '.' {
-				// This is a valid match
-				rootPathLen := len(root.Path)
-				if rootPathLen > bestMatch.pathLen {
-					bestMatch.name = root.Name
-					bestMatch.relPath = rel
-					bestMatch.pathLen = rootPathLen
-				}
-			} else if rel == "." {
-				// Repo is at the root itself
-				rootPathLen := len(root.Path)
-				if rootPathLen > bestMatch.pathLen {
-					bestMatch.name = root.Name
-					bestMatch.relPath = ""
-					bestMatch.pathLen = rootPathLen
-				}
+		if rel, ok := pathWithinRoot(root.Path, repoPath); ok {
+			rootPathLen := len(normalizeScanPath(root.Path))
+			if rootPathLen > bestMatch.pathLen {
+				bestMatch.name = root.Name
+				bestMatch.relPath = rel
+				bestMatch.pathLen = rootPathLen
 			}
 		}
 	}
@@ -470,8 +500,8 @@ func (s *Scanner) findRoot(repoPath string) (string, string) {
 // Supports both exact matches and glob patterns (e.g., "**/node_modules")
 func (s *Scanner) isExcluded(dirName, fullPath, rootPath string, excludes []string) bool {
 	// Get relative path from root for pattern matching
-	relPath, err := filepath.Rel(rootPath, fullPath)
-	if err != nil {
+	relPath, ok := pathWithinRoot(rootPath, fullPath)
+	if !ok {
 		relPath = dirName
 	}
 

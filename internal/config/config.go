@@ -13,6 +13,7 @@ type Config struct {
 	GlobalExcludes []string    `yaml:"global_excludes,omitempty"`
 	Roots          []Root      `yaml:"roots"`
 	Editor         string      `yaml:"editor"`
+	Scan           *ScanConfig `yaml:"scan,omitempty"`
 	LLM            *LLMConfig  `yaml:"llm,omitempty"`
 	List           *ListConfig `yaml:"list,omitempty"`
 }
@@ -25,6 +26,11 @@ type Root struct {
 	Exclude   []string `yaml:"exclude,omitempty"`
 	WSL       bool     `yaml:"wsl,omitempty"`        // True if this root is in WSL
 	WSLDistro string   `yaml:"wsl_distro,omitempty"` // WSL distro name (e.g., "Ubuntu")
+}
+
+// ScanConfig represents scan command configuration
+type ScanConfig struct {
+	Progress string `yaml:"progress,omitempty"`
 }
 
 // LLMConfig represents LLM configuration
