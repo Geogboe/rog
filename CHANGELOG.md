@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Geogboe/rog/compare/v0.3.0...v0.4.0) (2026-03-25)
+
+
+### Features
+
+* improve scan progress and windows path handling ([c60522d](https://github.com/Geogboe/rog/commit/c60522dce208c68f5c3763a8dbb4d3834bcf2164))
+
 ## [0.3.0](https://github.com/Geogboe/rog/compare/v0.2.0...v0.3.0) (2026-03-24)
 
 
