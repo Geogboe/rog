@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"gopkg.in/yaml.v3"
 )
@@ -138,6 +139,11 @@ func DefaultConfig() *Config {
 	}
 }
 
+// GetConfigPath returns the path to the config file
+func GetConfigPath() string {
+	return getConfigPath()
+}
+
 // getConfigPath returns the path to the config file
 func getConfigPath() string {
 	if path := os.Getenv("ROG_CONFIG"); path != "" {
@@ -237,10 +243,13 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
-// getDefaultEditor returns the default editor
+// getDefaultEditor returns the default editor based on environment and platform
 func getDefaultEditor() string {
 	if editor := os.Getenv("EDITOR"); editor != "" {
 		return editor
+	}
+	if runtime.GOOS == "windows" {
+		return "notepad"
 	}
 	return "vi"
 }

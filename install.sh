@@ -20,8 +20,8 @@ TMPDIR_CLEANUP=""  # global so EXIT trap can always reference it
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Colors only when stdout is a terminal
-if [ -t 1 ]; then
+# Colors only when stderr is a terminal (all UI output goes to stderr)
+if [ -t 2 ]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     YELLOW='\033[1;33m'
@@ -32,8 +32,8 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
 fi
 
-info()  { printf "${BLUE}==>${NC} ${BOLD}%s${NC}\n" "$*"; }
-ok()    { printf "${GREEN}✓${NC} %s\n" "$*"; }
+info()  { printf "${BLUE}==>${NC} ${BOLD}%s${NC}\n" "$*" >&2; }
+ok()    { printf "${GREEN}✓${NC} %s\n" "$*" >&2; }
 warn()  { printf "${YELLOW}warning:${NC} %s\n" "$*" >&2; }
 error() { printf "${RED}error:${NC} %s\n" "$*" >&2; exit 1; }
 debug() { [ "${ROG_DEBUG:-}" = "1" ] && printf "${BLUE}[debug]${NC} %s\n" "$*" >&2 || true; }

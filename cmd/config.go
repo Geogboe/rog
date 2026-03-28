@@ -12,10 +12,7 @@ import (
 	"github.com/Geogboe/rog/internal/config"
 )
 
-var (
-	configValidate bool
-	configEdit     bool
-)
+var configValidate bool
 
 var configCmd = &cobra.Command{
 	Use:   "config",
@@ -24,19 +21,35 @@ var configCmd = &cobra.Command{
 
 By default, displays the current configuration.
 Use --validate to check for configuration errors.
-Use --edit to open config in your editor.
+Use the 'edit' subcommand to open the config in your editor.
 
 Examples:
   rog config                  Show current config
   rog config --validate       Validate config file
-  rog config --edit           Edit config in $EDITOR`,
+  rog config edit             Edit config in your editor`,
 	Run: runConfig,
+}
+
+var configEditCmd = &cobra.Command{
+	Use:   "edit",
+	Short: "Edit the configuration file in your editor",
+	Long: `Open the rog configuration file in your editor.
+
+Editor resolution priority:
+  1. ROG_EDITOR environment variable
+  2. editor field in config.yml
+  3. EDITOR environment variable
+  4. notepad (Windows) or vi (Unix)
+
+Examples:
+  rog config edit`,
+	Run: runConfigEdit,
 }
 
 func init() {
 	rootCmd.AddCommand(configCmd)
+	configCmd.AddCommand(configEditCmd)
 	configCmd.Flags().BoolVar(&configValidate, "validate", false, "Validate configuration file")
-	configCmd.Flags().BoolVar(&configEdit, "edit", false, "Edit configuration file in editor")
 }
 
 func runConfig(cmd *cobra.Command, args []string) {
@@ -45,13 +58,12 @@ func runConfig(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	if configEdit {
-		editConfig()
-		return
-	}
-
 	// Default: show current config
 	showConfig()
+}
+
+func runConfigEdit(cmd *cobra.Command, args []string) {
+	editConfig()
 }
 
 func validateConfig() {
@@ -216,15 +228,7 @@ func showConfig() {
 
 func editConfig() {
 	// Get config path
-	configPath := os.Getenv("ROG_CONFIG")
-	if configPath == "" {
-		configDir := os.Getenv("XDG_CONFIG_HOME")
-		if configDir == "" {
-			homeDir, _ := os.UserHomeDir()
-			configDir = filepath.Join(homeDir, ".config")
-		}
-		configPath = filepath.Join(configDir, "rog", "config.yml")
-	}
+	configPath := config.GetConfigPath()
 
 	// Ensure config exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -236,19 +240,20 @@ func editConfig() {
 		fmt.Printf("Created default config at %s\n", configPath)
 	}
 
-	// Get editor
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "vi"
+	// Load config to get editor (already resolves ROG_EDITOR → config.Editor → EDITOR → platform default)
+	cfg, err := config.Load()
+	if err != nil {
+		exitWithError("Failed to load config: %v", err)
 	}
+	editor := cfg.Editor
 
 	// Open in editor
-	cmd := exec.Command(editor, configPath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	editorCmd := exec.Command(editor, configPath)
+	editorCmd.Stdin = os.Stdin
+	editorCmd.Stdout = os.Stdout
+	editorCmd.Stderr = os.Stderr
 
-	if err := cmd.Run(); err != nil {
+	if err := editorCmd.Run(); err != nil {
 		exitWithError("Failed to open editor: %v", err)
 	}
 
