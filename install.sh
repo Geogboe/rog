@@ -32,8 +32,8 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' BOLD='' NC=''
 fi
 
-info()  { printf "${BLUE}==>${NC} ${BOLD}%s${NC}\n" "$*"; }
-ok()    { printf "${GREEN}✓${NC} %s\n" "$*"; }
+info()  { printf "${BLUE}==>${NC} ${BOLD}%s${NC}\n" "$*" >&2; }
+ok()    { printf "${GREEN}✓${NC} %s\n" "$*" >&2; }
 warn()  { printf "${YELLOW}warning:${NC} %s\n" "$*" >&2; }
 error() { printf "${RED}error:${NC} %s\n" "$*" >&2; exit 1; }
 debug() { [ "${ROG_DEBUG:-}" = "1" ] && printf "${BLUE}[debug]${NC} %s\n" "$*" >&2 || true; }
