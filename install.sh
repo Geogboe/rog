@@ -20,8 +20,8 @@ TMPDIR_CLEANUP=""  # global so EXIT trap can always reference it
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Colors only when stdout is a terminal
-if [ -t 1 ]; then
+# Colors only when stderr is a terminal (all UI output goes to stderr)
+if [ -t 2 ]; then
     RED='\033[0;31m'
     GREEN='\033[0;32m'
     YELLOW='\033[1;33m'
