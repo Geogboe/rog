@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/Geogboe/rog/compare/v0.4.0...v0.4.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* **config:** convert --edit flag to config edit subcommand ([#25](https://github.com/Geogboe/rog/issues/25)) ([5dec1f7](https://github.com/Geogboe/rog/commit/5dec1f7dfe944b04bf8df6422e9778d0d960ca9a))
+* **install:** redirect info/ok output to stderr ([475b61f](https://github.com/Geogboe/rog/commit/475b61f8f01a17558cb6ce6ee9f1d0f9a2d5c927)), closes [#35](https://github.com/Geogboe/rog/issues/35)
+
 ## [0.4.0](https://github.com/Geogboe/rog/compare/v0.3.0...v0.4.0) (2026-03-25)
 
 
