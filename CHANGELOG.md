@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Geogboe/rog/compare/v0.4.1...v0.5.0) (2026-03-31)
+
+
+### Features
+
+* **update:** add rog update self-update command ([3c84c91](https://github.com/Geogboe/rog/commit/3c84c9119cfa83de61dfda87f57a1d11adc4f327))
+
 ## [0.4.1](https://github.com/Geogboe/rog/compare/v0.4.0...v0.4.1) (2026-03-31)
 
 
