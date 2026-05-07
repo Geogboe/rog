@@ -3,7 +3,9 @@ package git
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -35,26 +37,224 @@ type RepoInfo struct {
 	Host      string
 }
 
-// GetRepoInfo gets branch, commit, and remote info in a single efficient call
-// This is much faster than calling GetBranch, GetLastCommit, and GetRemoteURL separately
+// GetRepoInfo gets branch, commit, and remote info using direct filesystem reads
+// for maximum speed. Falls back to git subprocesses if filesystem reads fail.
 func GetRepoInfo(repoPath string) (*RepoInfo, error) {
 	info := &RepoInfo{}
-	branch, err := GetBranch(repoPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get repo info: %w", err)
-	}
-	info.Branch = branch
 
-	if commit, err := GetLastCommit(repoPath); err == nil {
-		info.Commit = commit
+	// Fast path: read everything directly from the .git directory
+	if gitDir, err := resolveGitDir(repoPath); err == nil {
+		if branch, err := readBranchFromGitDir(gitDir); err == nil {
+			info.Branch = branch
+		}
+		if info.Branch != "" {
+			if commit, err := readLastCommitFromGitDir(gitDir, info.Branch); err == nil {
+				info.Commit = commit
+			}
+		}
+		if url := readRemoteURLFromGitDir(gitDir); url != "" {
+			info.RemoteURL = url
+			info.Host = ExtractHost(url)
+		}
 	}
 
-	if remoteURL, err := GetRemoteURL(repoPath); err == nil {
-		info.RemoteURL = remoteURL
-		info.Host = ExtractHost(remoteURL)
+	// Subprocess fallback for branch (required field)
+	if info.Branch == "" {
+		branch, err := GetBranch(repoPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get repo info: %w", err)
+		}
+		info.Branch = branch
+	}
+
+	// Subprocess fallback for last commit (optional)
+	if info.Commit == nil {
+		if commit, err := GetLastCommit(repoPath); err == nil {
+			info.Commit = commit
+		}
+	}
+
+	// Subprocess fallback for remote URL (optional)
+	if info.RemoteURL == "" {
+		if url, err := GetRemoteURL(repoPath); err == nil {
+			info.RemoteURL = url
+			info.Host = ExtractHost(url)
+		}
 	}
 
 	return info, nil
+}
+
+// resolveGitDir resolves the actual git directory for a repo path.
+// Handles regular repos (.git is a directory) and worktrees/submodules
+// (.git is a file containing "gitdir: /path/to/actual/gitdir").
+func resolveGitDir(repoPath string) (string, error) {
+	gitPath := filepath.Join(repoPath, ".git")
+	info, err := os.Lstat(gitPath)
+	if err != nil {
+		return "", fmt.Errorf("no .git found: %w", err)
+	}
+	if info.IsDir() {
+		return gitPath, nil
+	}
+	// .git is a file (worktree or submodule checkout)
+	data, err := os.ReadFile(gitPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read .git file: %w", err)
+	}
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir: ") {
+		return "", fmt.Errorf("unexpected .git file content")
+	}
+	gitDir := strings.TrimPrefix(content, "gitdir: ")
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repoPath, gitDir)
+	}
+	return filepath.Clean(gitDir), nil
+}
+
+// readBranchFromGitDir reads the current branch from HEAD without spawning a subprocess.
+func readBranchFromGitDir(gitDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		return "", err
+	}
+	content := strings.TrimSpace(string(data))
+	if strings.HasPrefix(content, "ref: refs/heads/") {
+		return strings.TrimPrefix(content, "ref: refs/heads/"), nil
+	}
+	// Detached HEAD: content is the raw commit hash
+	return "HEAD", nil
+}
+
+// readRemoteURLFromGitDir reads the remote origin URL from the git config
+// without spawning a subprocess.
+func readRemoteURLFromGitDir(gitDir string) string {
+	data, err := os.ReadFile(filepath.Join(gitDir, "config"))
+	if err != nil {
+		return ""
+	}
+	inRemoteOrigin := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == `[remote "origin"]` {
+			inRemoteOrigin = true
+			continue
+		}
+		if strings.HasPrefix(trimmed, "[") {
+			inRemoteOrigin = false
+			continue
+		}
+		if inRemoteOrigin && strings.HasPrefix(trimmed, "url") {
+			if parts := strings.SplitN(trimmed, "=", 2); len(parts) == 2 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return ""
+}
+
+// readLastCommitFromGitDir reads the last commit from the reflog without
+// spawning a subprocess. It tries the branch-specific reflog first, then
+// falls back to the HEAD reflog.
+func readLastCommitFromGitDir(gitDir, branch string) (*CommitInfo, error) {
+	if branch != "" && branch != "HEAD" {
+		reflogPath := filepath.Join(gitDir, "logs", "refs", "heads", branch)
+		if line, err := readLastLine(reflogPath); err == nil {
+			return parseReflogLine(line)
+		}
+	}
+	if line, err := readLastLine(filepath.Join(gitDir, "logs", "HEAD")); err == nil {
+		return parseReflogLine(line)
+	}
+	return nil, fmt.Errorf("no reflog available")
+}
+
+// readLastLine reads the last non-empty line from a file by seeking near the end.
+func readLastLine(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	size := info.Size()
+	if size == 0 {
+		return "", fmt.Errorf("empty file")
+	}
+
+	// A typical reflog line is ~150-300 bytes; 1024 accommodates long author
+	// names and branch names. If the last line somehow exceeds this, parsing
+	// will fail and the caller falls back to the subprocess.
+	const chunkSize = int64(1024)
+	readSize := chunkSize
+	if size < readSize {
+		readSize = size
+	}
+
+	buf := make([]byte, readSize)
+	if _, err = f.ReadAt(buf, size-readSize); err != nil {
+		return "", err
+	}
+
+	content := string(buf)
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line, nil
+		}
+	}
+	return "", fmt.Errorf("no content found in reflog")
+}
+
+// parseReflogLine parses a git reflog entry.
+// Format: <oldhash> <newhash> Author Name <email> <timestamp> <tz>\t<action>
+func parseReflogLine(line string) (*CommitInfo, error) {
+	// Discard the action part after the tab
+	metadata := strings.SplitN(line, "\t", 2)[0]
+	fields := strings.Fields(metadata)
+	// Minimum: oldhash newhash author_token <email> timestamp tz (6 fields).
+	// Author can span multiple tokens before the <email> field.
+	if len(fields) < 6 {
+		return nil, fmt.Errorf("invalid reflog line: too few fields")
+	}
+
+	hash := fields[1] // newhash = current commit hash
+
+	// Locate the email token (wrapped in angle brackets)
+	emailIdx := -1
+	for i := 2; i < len(fields); i++ {
+		if strings.HasPrefix(fields[i], "<") {
+			emailIdx = i
+			break
+		}
+	}
+	// emailIdx must be at least 3: fields[0]=oldhash, fields[1]=newhash,
+	// fields[2]=first author token, fields[3+]=email or more author tokens.
+	if emailIdx < 3 {
+		return nil, fmt.Errorf("invalid reflog line: no email found")
+	}
+
+	author := strings.Join(fields[2:emailIdx], " ")
+
+	if emailIdx+1 >= len(fields) {
+		return nil, fmt.Errorf("invalid reflog line: no timestamp")
+	}
+
+	var ts int64
+	if _, err := fmt.Sscanf(fields[emailIdx+1], "%d", &ts); err != nil {
+		return nil, fmt.Errorf("invalid timestamp: %w", err)
+	}
+
+	return &CommitInfo{
+		Hash:      hash,
+		Author:    author,
+		Timestamp: time.Unix(ts, 0),
+	}, nil
 }
 
 // GetBranch returns the current branch name
