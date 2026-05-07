@@ -372,10 +372,7 @@ func (s *Scanner) walkRootParallel(root config.Root, repoChan chan<- string) err
 func (s *Scanner) processRepo(repoPath string) error {
 	repoPath = normalizeScanPath(repoPath)
 
-	// Verify it's actually a git repo
-	if !git.IsGitRepo(repoPath) {
-		return fmt.Errorf("not a git repository")
-	}
+	// No need to re-verify via subprocess: the walk already confirmed .git exists.
 
 	// Determine root and relative path
 	root, relPath := s.findRoot(repoPath)
