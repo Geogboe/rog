@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/Geogboe/rog/compare/v0.5.0...v0.6.0) (2026-08-12)
+
+
+### Features
+
+* **selfupdate:** support fetching newest release including prereleases ([f057726](https://github.com/Geogboe/rog/commit/f057726be9b1b2d62c6dc27663dcfd793a893d63))
+* **selfupdate:** support fetching newest release including prereleases ([4058b05](https://github.com/Geogboe/rog/commit/4058b05684ff6c48199411a1798ae485ad7f2feb))
+
+
+### Performance Improvements
+
+* **scanner:** eliminate subprocess spawns via direct .git filesystem reads ([3d121f5](https://github.com/Geogboe/rog/commit/3d121f5ab4e00b35be73c70ddfa28fa9ffe8e3c4))
+* **scanner:** replace subprocess spawns with direct filesystem reads ([f5b58a9](https://github.com/Geogboe/rog/commit/f5b58a9aa3f7ae0d778f13ec75743faa7a6ca79b))
+
 ## [0.5.0](https://github.com/Geogboe/rog/compare/v0.4.1...v0.5.0) (2026-03-31)
 
 
