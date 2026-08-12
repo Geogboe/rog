@@ -75,6 +75,12 @@ type Updater struct {
 	Client HTTPDoer
 	// AssetNamer determines the asset base filename for the current platform (required).
 	AssetNamer AssetNamer
+	// AllowPrerelease, when true, makes CheckLatest consider the newest
+	// release regardless of its prerelease/draft flags (via GitHub's release
+	// list endpoint) instead of only the latest stable release (via
+	// /releases/latest, GitHub's default, which excludes prereleases and
+	// drafts). Defaults to false: stable releases only.
+	AllowPrerelease bool
 }
 
 // httpClient returns the configured HTTP client or http.DefaultClient.
@@ -87,9 +93,13 @@ func (u *Updater) httpClient() HTTPDoer {
 
 // CheckLatest fetches the latest release from GitHub without downloading it.
 // Returns the release metadata resolved for the current OS and architecture.
+// See AllowPrerelease for how the "latest" release is selected.
 func (u *Updater) CheckLatest(ctx context.Context) (*Release, error) {
 	if err := u.validate(); err != nil {
 		return nil, err
+	}
+	if u.AllowPrerelease {
+		return u.fetchLatestReleaseIncludingPrerelease(ctx)
 	}
 	return u.fetchLatestRelease(ctx)
 }

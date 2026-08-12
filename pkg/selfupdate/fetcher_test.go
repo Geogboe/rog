@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -95,7 +96,76 @@ func TestFetchLatestRelease_NotFound(t *testing.T) {
 	u := newTestUpdater(&prefixedClient{base: srv.Client(), urlPrefix: srv.URL, apiBase: githubAPIBase})
 	_, err := u.CheckLatest(testCtx(t))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.True(t, errors.Is(err, ErrNoStableRelease), "expected ErrNoStableRelease, got: %v", err)
+}
+
+// TestCheckLatest_AllowPrerelease_UsesReleaseListEndpoint verifies that
+// Updater.AllowPrerelease switches CheckLatest to the /releases list endpoint
+// (which includes prereleases and drafts) instead of /releases/latest (which
+// does not), and that it takes the first (newest) entry in the list.
+func TestCheckLatest_AllowPrerelease_UsesReleaseListEndpoint(t *testing.T) {
+	assetName := "rog-0.6.0-" + testGOOS() + "-" + testGOARCH() + assetExtension()
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		if r.URL.Path == "/repos/owner/repo/releases/latest" {
+			t.Fatal("AllowPrerelease should not hit /releases/latest")
+		}
+		rels := []githubRelease{
+			{
+				TagName: "v0.6.0",
+				Assets: []githubAsset{
+					{Name: assetName, BrowserDownloadURL: "http://example.com/" + assetName},
+					{Name: "checksums.txt", BrowserDownloadURL: "http://example.com/checksums.txt"},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rels)
+	}))
+	t.Cleanup(srv.Close)
+
+	u := newTestUpdater(&prefixedClient{base: srv.Client(), urlPrefix: srv.URL, apiBase: githubAPIBase})
+	u.AllowPrerelease = true
+
+	rel, err := u.CheckLatest(testCtx(t))
+	require.NoError(t, err)
+	assert.Equal(t, "v0.6.0", rel.Version)
+	assert.Equal(t, "/repos/owner/repo/releases", gotPath)
+	assert.Equal(t, "per_page=1", gotQuery)
+}
+
+// TestCheckLatest_AllowPrerelease_EmptyList verifies a clear error when the
+// repository has no releases at all (as opposed to only non-stable ones).
+func TestCheckLatest_AllowPrerelease_EmptyList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]githubRelease{})
+	}))
+	t.Cleanup(srv.Close)
+
+	u := newTestUpdater(&prefixedClient{base: srv.Client(), urlPrefix: srv.URL, apiBase: githubAPIBase})
+	u.AllowPrerelease = true
+
+	_, err := u.CheckLatest(testCtx(t))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no releases found")
+}
+
+// TestCheckLatest_AllowPrerelease_False_StillUsesLatestEndpoint is a
+// regression guard: the zero value (AllowPrerelease unset) must keep hitting
+// /releases/latest, preserving existing stable-only behavior for callers who
+// don't opt in.
+func TestCheckLatest_AllowPrerelease_False_StillUsesLatestEndpoint(t *testing.T) {
+	assetName := "rog-0.5.0-" + testGOOS() + "-" + testGOARCH() + assetExtension()
+	srv := mockReleaseServer(t, "v0.5.0", assetName)
+
+	u := newTestUpdater(&prefixedClient{base: srv.Client(), urlPrefix: srv.URL, apiBase: githubAPIBase})
+
+	rel, err := u.CheckLatest(testCtx(t))
+	require.NoError(t, err)
+	assert.Equal(t, "v0.5.0", rel.Version)
 }
 
 func TestFetchLatestRelease_AssetNotFound(t *testing.T) {

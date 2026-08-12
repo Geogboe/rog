@@ -3,7 +3,9 @@ package selfupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"runtime"
 	"strings"
@@ -11,10 +13,23 @@ import (
 
 const githubAPIBase = "https://api.github.com"
 
+// ErrNoStableRelease indicates GitHub's /releases/latest endpoint found no
+// eligible release for the repository. That endpoint excludes every release
+// marked prerelease or draft, so this can happen even when releases exist —
+// set Updater.AllowPrerelease to fetch the newest release regardless of its
+// prerelease/draft flags.
+var ErrNoStableRelease = errors.New("no stable release found")
+
+// errReleaseNotFound is the internal sentinel for a 404 from the GitHub API.
+// fetchLatestRelease translates it into the more actionable ErrNoStableRelease;
+// fetchVersionRelease (a pinned-tag lookup) leaves it as-is, since "no stable
+// release" doesn't apply to a request for one specific tag.
+var errReleaseNotFound = errors.New("release not found")
+
 // githubRelease is the JSON structure from the GitHub Releases API.
 type githubRelease struct {
-	TagName string         `json:"tag_name"`
-	Assets  []githubAsset  `json:"assets"`
+	TagName string        `json:"tag_name"`
+	Assets  []githubAsset `json:"assets"`
 }
 
 // githubAsset is an individual asset within a GitHub release.
@@ -23,22 +38,65 @@ type githubAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// fetchLatestRelease fetches the latest release from GitHub.
+// fetchLatestRelease fetches the latest stable (non-prerelease, non-draft)
+// release from GitHub via the /releases/latest endpoint.
 func (u *Updater) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", githubAPIBase, u.Repo)
-	return u.fetchReleaseFromURL(ctx, url)
+	body, err := u.doReleaseRequest(ctx, url)
+	if err != nil {
+		if errors.Is(err, errReleaseNotFound) {
+			return nil, fmt.Errorf("%s: %w", u.Repo, ErrNoStableRelease)
+		}
+		return nil, err
+	}
+
+	var ghRel githubRelease
+	if err := json.Unmarshal(body, &ghRel); err != nil {
+		return nil, fmt.Errorf("decode release JSON: %w", err)
+	}
+	return u.resolveRelease(&ghRel)
+}
+
+// fetchLatestReleaseIncludingPrerelease fetches the single newest release for
+// the repository regardless of its prerelease/draft flags, using the release
+// list endpoint (sorted newest-first) rather than /releases/latest.
+func (u *Updater) fetchLatestReleaseIncludingPrerelease(ctx context.Context) (*Release, error) {
+	url := fmt.Sprintf("%s/repos/%s/releases?per_page=1", githubAPIBase, u.Repo)
+	body, err := u.doReleaseRequest(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+
+	var ghRels []githubRelease
+	if err := json.Unmarshal(body, &ghRels); err != nil {
+		return nil, fmt.Errorf("decode release JSON: %w", err)
+	}
+	if len(ghRels) == 0 {
+		return nil, fmt.Errorf("%s: no releases found", u.Repo)
+	}
+	return u.resolveRelease(&ghRels[0])
 }
 
 // fetchVersionRelease fetches a specific tagged release from GitHub.
 // version must include the leading "v" (e.g. "v0.5.0").
 func (u *Updater) fetchVersionRelease(ctx context.Context, version string) (*Release, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/tags/%s", githubAPIBase, u.Repo, version)
-	return u.fetchReleaseFromURL(ctx, url)
+	body, err := u.doReleaseRequest(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+
+	var ghRel githubRelease
+	if err := json.Unmarshal(body, &ghRel); err != nil {
+		return nil, fmt.Errorf("decode release JSON: %w", err)
+	}
+	return u.resolveRelease(&ghRel)
 }
 
-// fetchReleaseFromURL fetches and parses a GitHub release from the given API URL,
-// then resolves the asset and checksum URLs for the current platform.
-func (u *Updater) fetchReleaseFromURL(ctx context.Context, apiURL string) (*Release, error) {
+// doReleaseRequest issues an authenticated GET against the GitHub API and
+// returns the raw response body for the caller to decode — either a single
+// release object or a release list, depending on the endpoint.
+func (u *Updater) doReleaseRequest(ctx context.Context, apiURL string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -56,18 +114,17 @@ func (u *Updater) fetchReleaseFromURL(ctx context.Context, apiURL string) (*Rele
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("release not found at %s", apiURL)
+		return nil, fmt.Errorf("%w at %s", errReleaseNotFound, apiURL)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API returned %d", resp.StatusCode)
 	}
 
-	var ghRel githubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&ghRel); err != nil {
-		return nil, fmt.Errorf("decode release JSON: %w", err)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
 	}
-
-	return u.resolveRelease(&ghRel)
+	return body, nil
 }
 
 // resolveRelease matches the current platform's asset within a GitHub release.
