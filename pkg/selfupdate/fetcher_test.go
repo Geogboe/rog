@@ -97,20 +97,22 @@ func TestFetchLatestRelease_NotFound(t *testing.T) {
 	_, err := u.CheckLatest(testCtx(t))
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrNoStableRelease), "expected ErrNoStableRelease, got: %v", err)
+	assert.Contains(t, err.Error(), "/repos/owner/repo/releases/latest",
+		"expected the request URL to remain in the error for debuggability")
 }
 
-// TestCheckLatest_AllowPrerelease_UsesReleaseListEndpoint verifies that
-// Updater.AllowPrerelease switches CheckLatest to the /releases list endpoint
+// TestCheckLatest_AllowPrereleaseAndDraft_UsesReleaseListEndpoint verifies that
+// Updater.AllowPrereleaseAndDraft switches CheckLatest to the /releases list endpoint
 // (which includes prereleases and drafts) instead of /releases/latest (which
 // does not), and that it takes the first (newest) entry in the list.
-func TestCheckLatest_AllowPrerelease_UsesReleaseListEndpoint(t *testing.T) {
+func TestCheckLatest_AllowPrereleaseAndDraft_UsesReleaseListEndpoint(t *testing.T) {
 	assetName := "rog-0.6.0-" + testGOOS() + "-" + testGOARCH() + assetExtension()
 	var gotPath, gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		if r.URL.Path == "/repos/owner/repo/releases/latest" {
-			t.Fatal("AllowPrerelease should not hit /releases/latest")
+			t.Fatal("AllowPrereleaseAndDraft should not hit /releases/latest")
 		}
 		rels := []githubRelease{
 			{
@@ -127,7 +129,7 @@ func TestCheckLatest_AllowPrerelease_UsesReleaseListEndpoint(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	u := newTestUpdater(&prefixedClient{base: srv.Client(), urlPrefix: srv.URL, apiBase: githubAPIBase})
-	u.AllowPrerelease = true
+	u.AllowPrereleaseAndDraft = true
 
 	rel, err := u.CheckLatest(testCtx(t))
 	require.NoError(t, err)
@@ -136,9 +138,9 @@ func TestCheckLatest_AllowPrerelease_UsesReleaseListEndpoint(t *testing.T) {
 	assert.Equal(t, "per_page=1", gotQuery)
 }
 
-// TestCheckLatest_AllowPrerelease_EmptyList verifies a clear error when the
+// TestCheckLatest_AllowPrereleaseAndDraft_EmptyList verifies a clear error when the
 // repository has no releases at all (as opposed to only non-stable ones).
-func TestCheckLatest_AllowPrerelease_EmptyList(t *testing.T) {
+func TestCheckLatest_AllowPrereleaseAndDraft_EmptyList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode([]githubRelease{})
@@ -146,18 +148,18 @@ func TestCheckLatest_AllowPrerelease_EmptyList(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	u := newTestUpdater(&prefixedClient{base: srv.Client(), urlPrefix: srv.URL, apiBase: githubAPIBase})
-	u.AllowPrerelease = true
+	u.AllowPrereleaseAndDraft = true
 
 	_, err := u.CheckLatest(testCtx(t))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no releases found")
 }
 
-// TestCheckLatest_AllowPrerelease_False_StillUsesLatestEndpoint is a
-// regression guard: the zero value (AllowPrerelease unset) must keep hitting
+// TestCheckLatest_AllowPrereleaseAndDraft_False_StillUsesLatestEndpoint is a
+// regression guard: the zero value (AllowPrereleaseAndDraft unset) must keep hitting
 // /releases/latest, preserving existing stable-only behavior for callers who
 // don't opt in.
-func TestCheckLatest_AllowPrerelease_False_StillUsesLatestEndpoint(t *testing.T) {
+func TestCheckLatest_AllowPrereleaseAndDraft_False_StillUsesLatestEndpoint(t *testing.T) {
 	assetName := "rog-0.5.0-" + testGOOS() + "-" + testGOARCH() + assetExtension()
 	srv := mockReleaseServer(t, "v0.5.0", assetName)
 
