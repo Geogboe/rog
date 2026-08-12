@@ -13,11 +13,14 @@ import (
 
 const githubAPIBase = "https://api.github.com"
 
-// ErrNoStableRelease indicates GitHub's /releases/latest endpoint found no
-// eligible release for the repository. That endpoint excludes every release
-// marked prerelease or draft, so this can happen even when releases exist —
-// set Updater.AllowPrerelease to fetch the newest release regardless of its
-// prerelease/draft flags.
+// ErrNoStableRelease indicates GitHub's /releases/latest endpoint returned
+// 404. That endpoint excludes every release marked prerelease or draft, so
+// this is the expected result when a repository has releases but none of
+// them are stable — set Updater.AllowPrereleaseAndDraft to fetch the newest
+// release regardless of its prerelease/draft flags. A 404 here can also
+// have other causes (a mistyped Repo, a private repo with no Token); errors
+// wrapping this sentinel retain the underlying error, including the request
+// URL, so those cases stay distinguishable and debuggable.
 var ErrNoStableRelease = errors.New("no stable release found")
 
 // errReleaseNotFound is the internal sentinel for a 404 from the GitHub API.
@@ -45,7 +48,11 @@ func (u *Updater) fetchLatestRelease(ctx context.Context) (*Release, error) {
 	body, err := u.doReleaseRequest(ctx, url)
 	if err != nil {
 		if errors.Is(err, errReleaseNotFound) {
-			return nil, fmt.Errorf("%s: %w", u.Repo, ErrNoStableRelease)
+			// Wrap both the sentinel (for errors.Is) and the original error
+			// (which carries the endpoint URL) so a 404 caused by something
+			// other than "every release is prerelease/draft" — a typo'd
+			// Repo, a private repo with no auth — stays debuggable.
+			return nil, fmt.Errorf("%w: %w", ErrNoStableRelease, err)
 		}
 		return nil, err
 	}
