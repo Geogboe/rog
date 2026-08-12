@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/Geogboe/rog/compare/v0.6.0...v0.6.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **selfupdate:** address rog[#48](https://github.com/Geogboe/rog/issues/48) Copilot review findings ([871c3af](https://github.com/Geogboe/rog/commit/871c3afa76f8334188f792f1678639a5fc508d88))
+* **selfupdate:** address rog[#48](https://github.com/Geogboe/rog/issues/48) Copilot review findings ([0b3adc4](https://github.com/Geogboe/rog/commit/0b3adc4217aa55ecb9ffa26b2654bb3f78e389a5))
+
 ## [0.6.0](https://github.com/Geogboe/rog/compare/v0.5.0...v0.6.0) (2026-08-12)
 
 
