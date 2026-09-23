@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 
@@ -71,7 +72,7 @@ func Load() (*Config, error) {
 
 	// Expand paths in roots
 	for i := range cfg.Roots {
-		expandedPath, err := expandPath(cfg.Roots[i].Path)
+		expandedPath, err := expandRootPath(cfg.Roots[i], runtime.GOOS == "windows")
 		if err != nil {
 			return nil, fmt.Errorf("failed to expand path for root %s: %w", cfg.Roots[i].Name, err)
 		}
@@ -82,6 +83,17 @@ func Load() (*Config, error) {
 	applyDefaults(&cfg)
 
 	return &cfg, nil
+}
+
+// expandRootPath keeps WSL paths in Linux form when running on Windows.
+func expandRootPath(root Root, windows bool) (string, error) {
+	if windows && root.WSL {
+		if !path.IsAbs(root.Path) {
+			return "", fmt.Errorf("WSL path must be absolute: %s", root.Path)
+		}
+		return path.Clean(root.Path), nil
+	}
+	return expandPath(root.Path)
 }
 
 // Save saves configuration to file

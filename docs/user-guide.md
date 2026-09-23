@@ -66,7 +66,7 @@ This creates a basic config that you should customize with your actual project d
 Scan configured roots for Git repositories and update the index.
 
 ```bash
-# Basic scan (local only, fast)
+# Basic scan (local only)
 rog scan
 
 # Include remote status (slower, requires network)
@@ -85,6 +85,7 @@ rog scan --progress plain
 **What it does:**
 - Discovers all Git repositories in configured roots
 - Extracts Git metadata (branch, commits, status)
+- Limits each working-tree status check to 3 seconds; a timed-out check is shown as `status unknown` and excluded from `--clean` and `--dirty` results
 - Detects primary programming language
 - Reads `.rogmeta.yml` files for manual metadata
 - Optionally calls LLM to enrich missing metadata
@@ -488,13 +489,12 @@ rog scan --llm
 
 ## Performance
 
-| Operation | Target | Typical |
-|-----------|--------|---------|
-| `rog list` | < 100ms | ~20ms |
-| `rog info` | < 100ms | ~10ms |
-| `rog scan` (100 repos) | < 2s | ~1.5s |
-| `rog scan --remote` | < 10s | ~5s |
-| `rog scan --llm` (100 repos) | < 30s | ~20s |
+| Operation | Goal |
+|-----------|------|
+| `rog list`, `rog info` | < 100ms |
+| `rog scan` (100 repos) | < 2s |
+
+Scan time depends on filesystem speed and repository size. Large trees on mounted Windows filesystems can take much longer; the scan goal above is not a measured guarantee.
 
 **Tips for speed:**
 - Run `rog scan` periodically (not every time)

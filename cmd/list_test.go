@@ -38,35 +38,35 @@ func createTestIndexForCmd() *index.Index {
 	idx := index.New()
 
 	idx.Upsert(&index.Repo{
-		Name:            "test-repo-1",
-		AbsPath:         "/tmp/test-repo-1",
-		Root:            "test-root",
-		RelPath:         "path/to/repo1",
-		PrimaryLanguage: "Go",
-		CurrentBranch:   "main",
-		Host:            "github.com",
-		RemoteURL:       "https://github.com/user/test-repo-1",
-		LastCommitTime:  time.Now().Add(-1 * time.Hour),
+		Name:             "test-repo-1",
+		AbsPath:          "/tmp/test-repo-1",
+		Root:             "test-root",
+		RelPath:          "path/to/repo1",
+		PrimaryLanguage:  "Go",
+		CurrentBranch:    "main",
+		Host:             "github.com",
+		RemoteURL:        "https://github.com/user/test-repo-1",
+		LastCommitTime:   time.Now().Add(-1 * time.Hour),
 		LastCommitAuthor: "Test Author",
-		IsDirty:         false,
-		Ahead:           0,
-		Behind:          0,
+		IsDirty:          false,
+		Ahead:            0,
+		Behind:           0,
 	})
 
 	idx.Upsert(&index.Repo{
-		Name:            "test-repo-2",
-		AbsPath:         "/tmp/test-repo-2",
-		Root:            "test-root",
-		RelPath:         "path/to/repo2",
-		PrimaryLanguage: "Python",
-		CurrentBranch:   "develop",
-		Host:            "gitlab.com",
-		RemoteURL:       "https://gitlab.com/user/test-repo-2",
-		LastCommitTime:  time.Now().Add(-2 * time.Hour),
+		Name:             "test-repo-2",
+		AbsPath:          "/tmp/test-repo-2",
+		Root:             "test-root",
+		RelPath:          "path/to/repo2",
+		PrimaryLanguage:  "Python",
+		CurrentBranch:    "develop",
+		Host:             "gitlab.com",
+		RemoteURL:        "https://gitlab.com/user/test-repo-2",
+		LastCommitTime:   time.Now().Add(-2 * time.Hour),
 		LastCommitAuthor: "Another Author",
-		IsDirty:         true,
-		Ahead:           2,
-		Behind:          0,
+		IsDirty:          true,
+		Ahead:            2,
+		Behind:           0,
 	})
 
 	return idx
@@ -285,9 +285,9 @@ func TestListCommandHelp(t *testing.T) {
 
 func TestFormatStatusWithDifferentStates(t *testing.T) {
 	tests := []struct {
-		name     string
-		repo     *index.Repo
-		expected []string
+		name        string
+		repo        *index.Repo
+		expected    []string
 		notExpected []string
 	}{
 		{
@@ -334,7 +334,7 @@ func TestFormatStatusWithDifferentStates(t *testing.T) {
 				Ahead:   2,
 				Behind:  3,
 			},
-			expected: []string{"diverged", "↑2", "↓3", "dirty"},
+			expected:    []string{"diverged", "↑2", "↓3", "dirty"},
 			notExpected: []string{"ahead", "behind"},
 		},
 	}
@@ -602,7 +602,7 @@ func TestFieldsConflictWithShortLong(t *testing.T) {
 	// This should trigger exitWithError which calls os.Exit
 	// We can't actually test the os.Exit, but we can verify the logic exists
 	// by checking the validation in runList
-	
+
 	// Verify the validation exists
 	if listFields != "" && (listShort || listLong) {
 		// Expected: should trigger error
@@ -724,10 +724,10 @@ func TestFieldsEmpty(t *testing.T) {
 		AbsPath:         "/tmp/empty",
 		Root:            "test-root",
 		RelPath:         "empty",
-		PrimaryLanguage: "", // Empty language
-		Host:            "", // Empty host
-		CurrentBranch:   "", // Empty branch
-		Description:     "", // Empty description
+		PrimaryLanguage: "",  // Empty language
+		Host:            "",  // Empty host
+		CurrentBranch:   "",  // Empty branch
+		Description:     "",  // Empty description
 		Tags:            nil, // No tags
 	})
 
@@ -748,4 +748,16 @@ func TestFieldsEmpty(t *testing.T) {
 		}
 	}
 	assert.Contains(t, dataLine, "-") // for empty fields
+}
+
+func TestFormatStatusUnavailable(t *testing.T) {
+	status := formatStatus(&index.Repo{StatusUnavailable: true})
+	assert.Contains(t, status, "status unknown")
+	assert.NotContains(t, status, "clean")
+}
+
+func TestWindowsRelativePathDisplaysWithSlashes(t *testing.T) {
+	repo := &index.Repo{Root: "wsl", RelPath: `ai\ai-chatter`}
+	assert.Equal(t, "wsl/ai/ai-chatter", getFieldValue(repo, "path", false, 0))
+	assert.Equal(t, "ai/ai-chatter", getFieldValue(repo, "path", true, 0))
 }

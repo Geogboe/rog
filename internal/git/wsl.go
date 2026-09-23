@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -54,10 +55,15 @@ func GetLastCommitWSL(distro, repoPath string) (*CommitInfo, error) {
 
 // GetStatusWSL returns the working tree status for a WSL repository
 func GetStatusWSL(distro, repoPath string) (*Status, error) {
-	cmd := wsl.ExecInDistro(distro, "git", "-C", repoPath, "status", "--porcelain")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := wsl.ExecInDistroContext(ctx, distro, "git", "-C", repoPath, "status", "--porcelain")
 
 	output, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("git status timed out: %w", ctx.Err())
+		}
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 

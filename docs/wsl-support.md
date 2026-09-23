@@ -1,8 +1,8 @@
-# WSL Support Design
+# WSL Support
 
 ## Overview
 
-For Windows users with WSL (Windows Subsystem for Linux) installed, rog should be able to scan and index repositories inside WSL distributions.
+On Windows, rog scans and indexes repositories inside WSL distributions when a root has `wsl: true`.
 
 ## Configuration
 
@@ -34,9 +34,7 @@ When `wsl: true` is set:
 
 ### Visual Distinction
 
-In `rog list` output, WSL repositories are marked:
-- Root field shows: `wsl:ubuntu-dev` instead of just `ubuntu-dev`
-- This makes it clear which repos are in WSL
+The Root column shows the configured root name. JSON output includes `is_wsl: true` and the resolved `wsl_distro`; absolute paths use the WSL UNC path so Windows commands can open them.
 
 ### Platform Detection
 

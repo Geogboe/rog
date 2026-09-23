@@ -192,7 +192,7 @@ func formatSelectLine(repo *index.Repo, desc string) string {
 		lang = "unknown"
 	}
 
-	path := repo.Root + "/" + repo.RelPath
+	path := repo.Root + "/" + strings.ReplaceAll(repo.RelPath, "\\", "/")
 
 	// Use fixed-width formatting for aligned columns
 	// Name: 30 chars, Language: 12 chars, Path: 40 chars, Description: remaining

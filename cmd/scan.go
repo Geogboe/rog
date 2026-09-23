@@ -240,20 +240,26 @@ func renderDryRunMetrics(metrics *scanner.ScanMetrics) string {
 
 	fmt.Fprintf(&b, "Scan Metrics (Dry Run)\n")
 	fmt.Fprintf(&b, "Duration:             %v\n", duration.Round(time.Millisecond))
-	fmt.Fprintf(&b, "Total Directories:    %d\n", metrics.TotalDirs)
-	fmt.Fprintf(&b, "Directories Scanned:  %d\n", metrics.DirsScanned)
-	fmt.Fprintf(&b, "Directories Excluded: %d\n", metrics.DirsExcluded)
-	fmt.Fprintf(&b, "Directories Skipped:  %d (max depth)\n", metrics.DirsSkipped)
 	fmt.Fprintf(&b, "Repositories Found:   %d\n", metrics.ReposFound)
-	fmt.Fprintf(&b, "\nStatistics:\n")
-	fmt.Fprintf(&b, "  Deepest Path: %s (depth %d)\n", metrics.DeepestPath, metrics.DeepestDepth)
-	fmt.Fprintf(&b, "  Largest Dir:  %s (%d subdirs)\n", metrics.LargestDir, metrics.LargestDirSize)
+	if metrics.DirsScanned == 0 {
+		fmt.Fprintln(&b, "Directory metrics are unavailable with fd/fdfind discovery.")
+	} else {
+		fmt.Fprintf(&b, "Total Directories:    %d\n", metrics.TotalDirs)
+		fmt.Fprintf(&b, "Directories Scanned:  %d\n", metrics.DirsScanned)
+		fmt.Fprintf(&b, "Directories Excluded: %d\n", metrics.DirsExcluded)
+		fmt.Fprintf(&b, "Directories Skipped:  %d (max depth)\n", metrics.DirsSkipped)
+		fmt.Fprintf(&b, "\nStatistics:\n")
+		fmt.Fprintf(&b, "  Deepest Path: %s (depth %d)\n", metrics.DeepestPath, metrics.DeepestDepth)
+		fmt.Fprintf(&b, "  Largest Dir:  %s (%d subdirs)\n", metrics.LargestDir, metrics.LargestDirSize)
+	}
 
-	if duration > 0 && metrics.DirsScanned > 0 {
+	if duration > 0 {
 		fmt.Fprintf(&b, "\nPerformance:\n")
-		fmt.Fprintf(&b, "  %.0f dirs/sec\n", float64(metrics.DirsScanned)/duration.Seconds())
+		if metrics.DirsScanned > 0 {
+			fmt.Fprintf(&b, "  %.0f dirs/sec\n", float64(metrics.DirsScanned)/duration.Seconds())
+			fmt.Fprintf(&b, "  %.2f ms per dir\n", duration.Seconds()*1000.0/float64(metrics.DirsScanned))
+		}
 		fmt.Fprintf(&b, "  %.0f repos/sec\n", float64(metrics.ReposFound)/duration.Seconds())
-		fmt.Fprintf(&b, "  %.2f ms per dir\n", duration.Seconds()*1000.0/float64(metrics.DirsScanned))
 	}
 
 	if metrics.TotalDirs > 0 && metrics.DirsScanned > 0 && metrics.DirsExcluded > 0 {

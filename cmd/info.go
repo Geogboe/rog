@@ -117,7 +117,9 @@ func formatDetailedStatus(repo *index.Repo) string {
 		parts = append(parts, fmt.Sprintf("behind %d", repo.Behind))
 	}
 
-	if repo.IsDirty {
+	if repo.StatusUnavailable {
+		parts = append(parts, "status unknown")
+	} else if repo.IsDirty {
 		parts = append(parts, "dirty")
 	} else if repo.HasUntracked {
 		parts = append(parts, "untracked")

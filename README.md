@@ -351,15 +351,15 @@ rog list --behind
 
 ## Performance
 
-| Operation | Target | Typical |
-|-----------|--------|---------|
-| `rog list` | < 100ms | ~20ms |
-| `rog info` | < 100ms | ~10ms |
-| `rog scan` (with fd*) | < 5s/500 repos | ~2-3s |
-| `rog scan` (no fd) | < 10s/500 repos | ~8s |
-| `rog scan --remote` | < 30s/500 repos | ~15s |
+| Operation | Goal |
+|-----------|------|
+| `rog list` | < 100ms |
+| `rog info` | < 100ms |
+| `rog scan` (with `fd` or `fdfind`) | < 5s/500 repos |
+| `rog scan` (built-in discovery) | < 10s/500 repos |
+| `rog scan --remote` | < 30s/500 repos |
 
-\* Install `fd` for 10-30x faster scanning: `brew install fd` or `cargo install fd-find`
+Scan time depends on the filesystem and the cost of collecting Git status for each repository. rog automatically uses either `fd` or `fdfind` when available. On Debian/Ubuntu, install it with `apt install fd-find`; other options include `brew install fd` and `cargo install fd-find`.
 
 ## Documentation
 

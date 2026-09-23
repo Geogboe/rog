@@ -2,6 +2,7 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -307,11 +308,16 @@ func GetLastCommit(repoPath string) (*CommitInfo, error) {
 
 // GetStatus returns the working tree status
 func GetStatus(repoPath string) (*Status, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("git status timed out: %w", ctx.Err())
+		}
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 

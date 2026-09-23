@@ -3,8 +3,10 @@ package scanner
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
+	"github.com/Geogboe/rog/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,8 +98,8 @@ The actual description.`,
 			description: "should return empty string when only headers exist",
 		},
 		{
-			name: "empty file",
-			content: ``,
+			name:        "empty file",
+			content:     ``,
 			expected:    "",
 			description: "should handle empty file",
 		},
@@ -260,5 +262,77 @@ func TestExtractReadmeDescriptionSentenceExtraction(t *testing.T) {
 			result := extractReadmeDescription(tmpDir)
 			assert.Equal(t, tt.expected, result)
 		})
+	}
+}
+
+func TestWalkRootWithFdFindsOnlyGitMarkers(t *testing.T) {
+	fdCommand := findFdCommand()
+	if fdCommand == "" {
+		t.Skip("fd or fdfind is not installed")
+	}
+
+	rootPath := t.TempDir()
+	for _, name := range []string{"regular", "worktree", "not-a-repo", "excluded"} {
+		require.NoError(t, os.Mkdir(filepath.Join(rootPath, name), 0755))
+	}
+	require.NoError(t, os.Mkdir(filepath.Join(rootPath, "regular", ".git"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "worktree", ".git"), []byte("gitdir: elsewhere"), 0644))
+	require.NoError(t, os.Mkdir(filepath.Join(rootPath, "not-a-repo", ".github"), 0755))
+	require.NoError(t, os.Mkdir(filepath.Join(rootPath, "excluded", ".git"), 0755))
+
+	root := config.Root{Path: rootPath, MaxDepth: 1, Exclude: []string{"excluded"}}
+	scan := New(&config.Config{GlobalExcludes: []string{".git"}}, nil)
+	repos := make(chan string, 4)
+	require.NoError(t, scan.walkRootWithFd(fdCommand, root, repos))
+	close(repos)
+
+	var found []string
+	for repo := range repos {
+		found = append(found, repo)
+	}
+	sort.Strings(found)
+	assert.Equal(t, []string{filepath.Join(rootPath, "regular"), filepath.Join(rootPath, "worktree")}, found)
+}
+
+func TestScanDryRunCountsRepositoriesOnce(t *testing.T) {
+	rootPath := t.TempDir()
+	for _, name := range []string{"first", "second"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(rootPath, name, ".git"), 0755))
+	}
+	t.Setenv("ROG_DATA", t.TempDir())
+
+	cfg := &config.Config{Roots: []config.Root{{Path: rootPath, MaxDepth: 1}}}
+	scan := New(cfg, nil).WithDryRun(true)
+	require.NoError(t, scan.Scan())
+	assert.Equal(t, 2, scan.GetMetrics().ReposFound)
+}
+
+func TestRepoPathFromGitMarkerWithTrailingSeparator(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "project")
+	marker := filepath.Join(repoPath, ".git") + string(filepath.Separator)
+	assert.Equal(t, repoPath, repoPathFromGitMarker(marker))
+}
+
+func TestFindRootIncludesRootAndHiddenRepository(t *testing.T) {
+	rootPath := t.TempDir()
+	scan := New(&config.Config{Roots: []config.Root{{Name: "projects", Path: rootPath}}}, nil)
+
+	for _, tt := range []struct {
+		path string
+		rel  string
+	}{
+		{rootPath, ""},
+		{filepath.Join(rootPath, ".hidden"), ".hidden"},
+	} {
+		name, rel := scan.findRoot(tt.path)
+		assert.Equal(t, "projects", name)
+		assert.Equal(t, tt.rel, rel)
+	}
+}
+
+func TestNormalizeConfiguredRootPathWSLOnWindows(t *testing.T) {
+	got := normalizeConfiguredRootPath(config.Root{Path: "/home/user/projects/../projects", WSL: true}, true)
+	if got != "/home/user/projects" {
+		t.Fatalf("WSL root path = %q, want /home/user/projects", got)
 	}
 }

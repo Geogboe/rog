@@ -5,11 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/Geogboe/rog/internal/config"
+	"github.com/Geogboe/rog/internal/wsl"
 )
 
 var configValidate bool
@@ -94,6 +96,19 @@ func validateConfig() {
 		// Check path is not empty
 		if root.Path == "" {
 			errors = append(errors, fmt.Sprintf("%s: Path is required", rootPrefix))
+		} else if root.WSL && runtime.GOOS == "windows" {
+			distro := root.WSLDistro
+			if distro == "" {
+				var err error
+				distro, err = wsl.GetDefaultDistro()
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("%s: %v", rootPrefix, err))
+					continue
+				}
+			}
+			if err := wsl.ValidateRoot(distro, root.Path); err != nil {
+				errors = append(errors, fmt.Sprintf("%s: %v", rootPrefix, err))
+			}
 		} else {
 			// Check if path exists and is accessible
 			info, err := os.Stat(root.Path)
@@ -105,7 +120,6 @@ func validateConfig() {
 				errors = append(errors, fmt.Sprintf("%s: Path is not a directory: %s", rootPrefix, root.Path))
 			}
 
-			// Check for permission issues
 			if err := checkDirPermissions(root.Path); err != nil {
 				warnings = append(warnings, fmt.Sprintf("%s: %v", rootPrefix, err))
 			}
@@ -156,15 +170,8 @@ func validateConfig() {
 		}
 	}
 
-	// 6. Validate LLM config if present
-	if cfg.LLM != nil {
-		if cfg.LLM.Endpoint == "" {
-			warnings = append(warnings, "LLM endpoint is empty (LLM features will not work)")
-		}
-		if cfg.LLM.Model == "" {
-			warnings = append(warnings, "LLM model is empty (LLM features will not work)")
-		}
-	}
+	// 6. Validate LLM settings only when the optional feature is configured.
+	warnings = append(warnings, llmConfigWarnings(cfg.LLM)...)
 
 	// 7. Check editor
 	if cfg.Editor != "" {
@@ -211,6 +218,33 @@ func validateConfig() {
 	}
 }
 
+func llmConfigWarnings(llm *config.LLMConfig) []string {
+	if llm == nil || (llm.Endpoint == "" && llm.Model == "" && llm.APIKey == "" && llm.ExtraInstructions == "") {
+		return nil
+	}
+
+	var warnings []string
+	if llm.Endpoint == "" {
+		warnings = append(warnings, "LLM endpoint is empty (LLM features will not work)")
+	}
+	if llm.Model == "" {
+		warnings = append(warnings, "LLM model is empty (LLM features will not work)")
+	}
+	return warnings
+}
+
+func configForDisplay(cfg *config.Config) *config.Config {
+	copy := *cfg
+	if cfg.LLM != nil {
+		llm := *cfg.LLM
+		if llm.APIKey != "" {
+			llm.APIKey = "<redacted>"
+		}
+		copy.LLM = &llm
+	}
+	return &copy
+}
+
 func showConfig() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -218,7 +252,7 @@ func showConfig() {
 	}
 
 	// Marshal to YAML for pretty printing
-	data, err := yaml.Marshal(cfg)
+	data, err := yaml.Marshal(configForDisplay(cfg))
 	if err != nil {
 		exitWithError("Failed to format config: %v", err)
 	}

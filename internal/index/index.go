@@ -33,17 +33,18 @@ type Repo struct {
 	WSLDistro string `json:"wsl_distro"` // WSL distro name if IsWSL is true
 
 	// Git Info
-	RemoteURL        string    `json:"remote_url,omitempty"`
-	Host             string    `json:"host,omitempty"`
-	CurrentBranch    string    `json:"current_branch,omitempty"`
-	LastCommitTime   time.Time `json:"last_commit_time,omitempty"`
-	LastCommitAuthor string    `json:"last_commit_author,omitempty"`
-	LastCommitHash   string    `json:"last_commit_hash,omitempty"`
-	IsDirty          bool      `json:"is_dirty"`
-	HasUntracked     bool      `json:"has_untracked"`
-	Ahead            int       `json:"ahead"`
-	Behind           int       `json:"behind"`
-	LastGitCheckAt   time.Time `json:"last_git_check_at,omitempty"`
+	RemoteURL         string    `json:"remote_url,omitempty"`
+	Host              string    `json:"host,omitempty"`
+	CurrentBranch     string    `json:"current_branch,omitempty"`
+	LastCommitTime    time.Time `json:"last_commit_time,omitempty"`
+	LastCommitAuthor  string    `json:"last_commit_author,omitempty"`
+	LastCommitHash    string    `json:"last_commit_hash,omitempty"`
+	IsDirty           bool      `json:"is_dirty"`
+	HasUntracked      bool      `json:"has_untracked"`
+	StatusUnavailable bool      `json:"status_unavailable,omitempty"`
+	Ahead             int       `json:"ahead"`
+	Behind            int       `json:"behind"`
+	LastGitCheckAt    time.Time `json:"last_git_check_at,omitempty"`
 
 	// Metadata
 	PrimaryLanguage string   `json:"primary_language,omitempty"`

@@ -380,3 +380,11 @@ func TestQueryStress(t *testing.T) {
 	results = Query(idx, filter)
 	assert.NotEmpty(t, results)
 }
+
+func TestQueryExcludesUnknownStatusFromCleanAndDirty(t *testing.T) {
+	idx := index.New()
+	idx.Upsert(&index.Repo{Name: "unknown", AbsPath: "/tmp/unknown", StatusUnavailable: true})
+	for _, dirty := range []bool{false, true} {
+		assert.Empty(t, Query(idx, &Filter{Dirty: &dirty}))
+	}
+}
