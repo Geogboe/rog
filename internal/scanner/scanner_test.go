@@ -2,11 +2,13 @@ package scanner
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"testing"
 
 	"github.com/Geogboe/rog/internal/config"
+	"github.com/Geogboe/rog/internal/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -335,4 +337,39 @@ func TestNormalizeConfiguredRootPathWSLOnWindows(t *testing.T) {
 	if got != "/home/user/projects" {
 		t.Fatalf("WSL root path = %q, want /home/user/projects", got)
 	}
+}
+
+func TestScanReusesKnownReposAndDiscoversNewOnes(t *testing.T) {
+	rootPath := t.TempDir()
+	known := filepath.Join(rootPath, "known")
+	newRepo := filepath.Join(rootPath, "new")
+	for _, repoPath := range []string{known, newRepo} {
+		cmd := exec.Command("git", "init", "--quiet", repoPath)
+		require.NoError(t, cmd.Run())
+	}
+	t.Setenv("ROG_DATA", t.TempDir())
+	idx := index.New()
+	idx.Upsert(&index.Repo{AbsPath: known, Name: "known", Root: "projects", RelPath: "known", CurrentBranch: "cached-branch"})
+	before, ok := idx.Get(known)
+	require.True(t, ok)
+	lastScan := before.LastScanAt
+
+	cfg := &config.Config{Roots: []config.Root{{Name: "projects", Path: rootPath, MaxDepth: 1}}}
+	scan := New(cfg, idx).WithReuseExisting(true)
+	require.NoError(t, scan.Scan())
+	got, ok := idx.Get(known)
+	require.True(t, ok)
+	assert.Equal(t, "cached-branch", got.CurrentBranch)
+	assert.Equal(t, lastScan, got.LastScanAt)
+	_, ok = idx.Get(newRepo)
+	assert.True(t, ok, "scan should index newly discovered repositories")
+	assert.Equal(t, 1, scan.GetMetrics().ReposReused)
+
+	fullScan := New(cfg, idx).WithReuseExisting(false)
+	require.NoError(t, fullScan.Scan())
+	refreshed, ok := idx.Get(known)
+	require.True(t, ok)
+	assert.NotEqual(t, "cached-branch", refreshed.CurrentBranch)
+	assert.True(t, refreshed.LastScanAt.After(lastScan))
+	assert.Zero(t, fullScan.GetMetrics().ReposReused)
 }

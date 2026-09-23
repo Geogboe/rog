@@ -21,6 +21,7 @@ var (
 	scanLLM         bool
 	scanRefreshMeta bool
 	scanDryRun      bool
+	scanFull        bool
 	scanProgress    string
 )
 
@@ -31,12 +32,12 @@ var scanCmd = &cobra.Command{
 
 By default, this performs local-only operations:
   - Discovers git repositories
-  - Extracts git metadata (branch, commits, status)
-  - Detects primary language
-  - Reads metadata files (.rogmeta.yml)
+  - Reuses indexed metadata for known repositories
+  - Extracts metadata for new repositories
 
 Flags:
   --dry-run: Show scan metrics without processing (for debugging performance)
+  --full: Refresh Git metadata and status for every repository
   --progress: Control scan progress rendering (auto, off, plain, rich)
   --remote: Fetch remote status (ahead/behind) - requires network
   --llm: Use LLM to generate descriptions/tags for repos missing them
@@ -47,6 +48,7 @@ Flags:
 func init() {
 	rootCmd.AddCommand(scanCmd)
 	scanCmd.Flags().BoolVar(&scanDryRun, "dry-run", false, "Show scan metrics without processing (for debugging performance)")
+	scanCmd.Flags().BoolVar(&scanFull, "full", false, "Refresh Git metadata and status for every repository")
 	scanCmd.Flags().StringVar(&scanProgress, "progress", "", "Progress mode: auto, off, plain, rich")
 	scanCmd.Flags().BoolVar(&scanRemote, "remote", false, "Check remote status (ahead/behind)")
 	scanCmd.Flags().BoolVar(&scanLLM, "llm", false, "Use LLM to enrich metadata (use with --refresh-meta to update existing LLM metadata)")
@@ -93,7 +95,8 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 
 	// Create scanner
-	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote).WithDryRun(scanDryRun)
+	reuseExisting := !scanFull && !scanRemote
+	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote).WithDryRun(scanDryRun).WithReuseExisting(reuseExisting)
 	fmt.Fprint(os.Stdout, renderer.Start(scanProgressSnapshot{
 		Phase:      scanPhaseScan,
 		RootsTotal: len(cfg.Roots),
@@ -174,6 +177,9 @@ func runScan(cmd *cobra.Command, args []string) {
 		StaleRemoved: removed,
 		Duration:     duration,
 	}))
+	if reuseExisting && scan.GetMetrics().ReposReused > 0 {
+		fmt.Fprintf(os.Stdout, "Reused metadata for %d indexed repositories. Run 'rog scan --full' to refresh Git state.\n", scan.GetMetrics().ReposReused)
+	}
 }
 
 func enrichWithLLM(cfg *config.Config, idx *index.Index, refresh bool) error {

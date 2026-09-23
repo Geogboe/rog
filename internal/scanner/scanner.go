@@ -23,13 +23,14 @@ import (
 
 // Scanner handles repository scanning
 type Scanner struct {
-	cfg         *config.Config
-	idx         *index.Index
-	globalMeta  *metadata.GlobalMeta
-	checkRemote bool
-	workers     int
-	dryRun      bool
-	metrics     *ScanMetrics
+	cfg           *config.Config
+	idx           *index.Index
+	globalMeta    *metadata.GlobalMeta
+	checkRemote   bool
+	reuseExisting bool
+	workers       int
+	dryRun        bool
+	metrics       *ScanMetrics
 }
 
 // ScanMetrics tracks scanning statistics
@@ -38,6 +39,7 @@ type ScanMetrics struct {
 	DirsExcluded   int
 	DirsSkipped    int // max depth
 	ReposFound     int
+	ReposReused    int
 	RootsTotal     int
 	RootsCompleted int
 	TotalDirs      int
@@ -70,6 +72,12 @@ func (s *Scanner) WithRemoteCheck(enabled bool) *Scanner {
 	return s
 }
 
+// WithReuseExisting keeps indexed metadata while still discovering new repositories.
+func (s *Scanner) WithReuseExisting(enabled bool) *Scanner {
+	s.reuseExisting = enabled
+	return s
+}
+
 // WithDryRun enables dry-run mode (collect metrics without processing)
 func (s *Scanner) WithDryRun(enabled bool) *Scanner {
 	s.dryRun = enabled
@@ -91,6 +99,7 @@ func (s *Scanner) SnapshotMetrics() ScanMetrics {
 		DirsExcluded:   s.metrics.DirsExcluded,
 		DirsSkipped:    s.metrics.DirsSkipped,
 		ReposFound:     s.metrics.ReposFound,
+		ReposReused:    s.metrics.ReposReused,
 		RootsTotal:     s.metrics.RootsTotal,
 		RootsCompleted: s.metrics.RootsCompleted,
 		TotalDirs:      s.metrics.TotalDirs,
@@ -154,6 +163,17 @@ func (s *Scanner) Scan() error {
 			go func() {
 				defer wg.Done()
 				for repoPath := range repoChan {
+					if s.reuseExisting {
+						if existing, ok := s.idx.Get(repoPath); ok {
+							rootName, relPath := s.findRoot(repoPath)
+							if existing.Root == rootName && existing.RelPath == relPath {
+								s.metrics.mu.Lock()
+								s.metrics.ReposReused++
+								s.metrics.mu.Unlock()
+								continue
+							}
+						}
+					}
 					logger.Debug("Processing repository: %s", repoPath)
 					if err := s.processRepo(repoPath); err != nil {
 						logger.Verbose("Failed to process %s: %v", repoPath, err)

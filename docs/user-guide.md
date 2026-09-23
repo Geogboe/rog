@@ -66,8 +66,11 @@ This creates a basic config that you should customize with your actual project d
 Scan configured roots for Git repositories and update the index.
 
 ```bash
-# Basic scan (local only)
+# Fast scan (local only): discover new repos and reuse indexed metadata
 rog scan
+
+# Refresh Git branch, commit, status, and repository metadata
+rog scan --full
 
 # Include remote status (slower, requires network)
 rog scan --remote
@@ -84,13 +87,12 @@ rog scan --progress plain
 
 **What it does:**
 - Discovers all Git repositories in configured roots
-- Extracts Git metadata (branch, commits, status)
-- Limits each working-tree status check to 3 seconds; a timed-out check is shown as `status unknown` and excluded from `--clean` and `--dirty` results
-- Detects primary programming language
-- Reads `.rogmeta.yml` files for manual metadata
+- Reuses indexed Git and repository metadata for known repositories; values such as dirty/clean state may be stale until a full scan
+- Extracts Git metadata, language, and `.rogmeta.yml` metadata for new repositories
+- With `--full`, refreshes those fields for every repository; each working-tree status check has a 3-second limit, and a timed-out check is shown as `status unknown` and excluded from `--clean` and `--dirty` results
 - Optionally calls LLM to enrich missing metadata
 
-**Performance:** Typically < 2s for hundreds of repos (local-only)
+**Performance:** Scan time depends on the number and location of configured roots. `--full` also checks every repository's Git state and can be substantially slower.
 
 ### `rog list`
 

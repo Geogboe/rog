@@ -30,8 +30,11 @@ rog init
 # Edit config to add your project directories
 vi ~/.config/rog/config.yml
 
-# Scan repositories
+# Scan repositories, reusing metadata for indexed repos
 rog scan
+
+# Refresh Git state and metadata for all repos
+rog scan --full
 
 # Rich progress for interactive scans
 rog scan --progress rich
