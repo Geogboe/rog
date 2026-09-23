@@ -57,7 +57,7 @@ func GetLastCommitWSL(distro, repoPath string) (*CommitInfo, error) {
 func GetStatusWSL(distro, repoPath string) (*Status, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := wsl.ExecInDistroContext(ctx, distro, "git", "-C", repoPath, "status", "--porcelain")
+	cmd := wsl.ExecInDistroContext(ctx, distro, "git", "--no-optional-locks", "-C", repoPath, "status", "--porcelain")
 
 	output, err := cmd.Output()
 	if err != nil {

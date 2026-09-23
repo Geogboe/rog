@@ -310,7 +310,7 @@ func GetLastCommit(repoPath string) (*CommitInfo, error) {
 func GetStatus(repoPath string) (*Status, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain")
+	cmd := exec.CommandContext(ctx, "git", "--no-optional-locks", "status", "--porcelain")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
