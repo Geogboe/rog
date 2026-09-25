@@ -215,9 +215,6 @@ func (m model) View() string {
 		label = ansi.Truncate(label, m.width, "…")
 		b.WriteString(label + "\n")
 	}
-	for i := end - m.offset; i < m.rows(); i++ {
-		b.WriteByte('\n')
-	}
 	b.WriteString(strings.Repeat("─", max(1, min(m.width, 80))) + "\n")
 	if len(m.matches) > 0 {
 		selected := m.matches[m.cursor].item

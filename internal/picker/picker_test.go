@@ -59,3 +59,12 @@ func BenchmarkMatcherTenThousandEntries(b *testing.B) {
 		m.refilter()
 	}
 }
+
+func TestPickerDetailsFollowShortResultList(t *testing.T) {
+	m := newModel([]Item{{ID: "/one/service", Name: "service", Path: "/one/service"}, {ID: "/two/service", Name: "service", Path: "/two/service"}})
+	m.height = 40
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) != 9 || lines[6] != "/one/service" {
+		t.Fatalf("picker left blank space before details: %q", m.View())
+	}
+}
