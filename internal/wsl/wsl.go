@@ -3,7 +3,9 @@ package wsl
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -17,7 +19,7 @@ func IsAvailable() bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "wsl", "--list", "--quiet")
+	cmd := exec.CommandContext(ctx, executable(), "--list", "--quiet")
 	return cmd.Run() == nil
 }
 
@@ -42,7 +44,7 @@ func GetDefaultDistro() (string, error) {
 	// Query inside the default distro to avoid decoding wsl --list's UTF-16 output.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "wsl", "--exec", "printenv", "WSL_DISTRO_NAME").Output()
+	output, err := exec.CommandContext(ctx, executable(), "--exec", "printenv", "WSL_DISTRO_NAME").Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get default WSL distro: %w", err)
 	}
@@ -64,7 +66,7 @@ func ExecInDistroContext(ctx context.Context, distro string, command string, arg
 	wslArgs := []string{"-d", distro, "--exec", command}
 	wslArgs = append(wslArgs, args...)
 
-	return exec.CommandContext(ctx, "wsl", wslArgs...)
+	return exec.CommandContext(ctx, executable(), wslArgs...)
 }
 
 // TranslatePathToWindows converts a WSL path to the Windows UNC share.
@@ -97,4 +99,18 @@ func ValidateRoot(distro, path string) error {
 	}
 
 	return nil
+}
+
+// executable resolves the inbox WSL launcher even when an embedded shell has
+// a reduced PATH. SystemRoot is supplied by Windows itself.
+func executable() string {
+	if runtime.GOOS == "windows" {
+		if root := os.Getenv("SystemRoot"); root != "" {
+			candidate := filepath.Join(root, "System32", "wsl.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return "wsl.exe"
 }

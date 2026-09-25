@@ -319,3 +319,22 @@ func generateID(absPath string) string {
 	hash := sha256.Sum256([]byte(absPath))
 	return hex.EncodeToString(hash[:])[:16]
 }
+
+// RemoveStaleInRoots removes absent repositories only from roots that were
+// enumerated successfully. Failed or skipped roots retain their previous index.
+func (idx *Index) RemoveStaleInRoots(foundPaths map[string]struct{}, completeRoots map[string]struct{}) int {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	removed := 0
+	for path, repo := range idx.Repos {
+		if _, complete := completeRoots[repo.Root]; !complete {
+			continue
+		}
+		if _, found := foundPaths[path]; found {
+			continue
+		}
+		delete(idx.Repos, path)
+		removed++
+	}
+	return removed
+}

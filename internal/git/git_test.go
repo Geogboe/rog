@@ -22,7 +22,7 @@ func TestGetRepoInfoUsesNativeGit(t *testing.T) {
 	}
 	for _, args := range [][]string{
 		{"-C", repo, "add", "README.md"},
-		{"-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "test"},
+		{"-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "-m", "test"},
 		{"-C", repo, "remote", "add", "origin", "https://example.com/team/repo.git"},
 	} {
 		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {

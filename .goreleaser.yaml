@@ -5,6 +5,8 @@ project_name: rog
 before:
   hooks:
     - go mod tidy
+    - bash scripts/build-wsl-worker.sh
+    - python3 scripts/build-third-party-notices.py
 
 builds:
   - id: rog
@@ -27,12 +29,15 @@ builds:
 
 archives:
   - id: rog-archives
-    builds:
+    ids:
       - rog
     name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - LICENSE
+      - THIRD_PARTY_NOTICES.txt
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 checksum:
   name_template: checksums.txt

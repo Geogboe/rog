@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/index"
+	"github.com/Geogboe/rog/internal/picker"
 	"github.com/Geogboe/rog/internal/query"
 )
 
@@ -20,10 +20,10 @@ var (
 var selectCmd = &cobra.Command{
 	Use:   "select [search terms...]",
 	Short: "Interactively select a repository",
-	Long: `Select a repository interactively using fzf (if available).
+	Long: `Select a repository using rog's built-in searchable picker.
 
 Accepts the same search terms and filters as 'rog list'.
-If fzf is not available, falls back to plain list output.
+Requires an interactive terminal when multiple repositories match.
 
 Returns the absolute path of the selected repository.
 
@@ -107,112 +107,40 @@ func runSelect(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	// Try to use fzf
-	if hasFzf() {
-		selected := selectWithFzf(results)
-		if selected != nil {
-			if selectOpen {
-				openInEditor(selected)
-			} else {
-				fmt.Println(selected.AbsPath)
-			}
-		}
-	} else {
-		// Fallback: just list them
-		fmt.Fprintln(os.Stderr, "fzf not found. Install fzf for interactive selection.")
-		fmt.Fprintln(os.Stderr, "Listing matching repositories:")
-		outputTable(results, false, false, nil)
-	}
-}
-
-func hasFzf() bool {
-	_, err := exec.LookPath("fzf")
-	return err == nil
-}
-
-func selectWithFzf(repos []*index.Repo) *index.Repo {
-	// Build input for fzf with aligned columns
-	var lines []string
-	for _, repo := range repos {
-		// Truncate description to 50 chars for select
-		desc := repo.Description
-		if len(desc) > 50 {
-			desc = desc[:47] + "..."
-		}
-		if desc == "" {
-			desc = "-"
-		}
-
-		line := formatSelectLine(repo, desc)
-		lines = append(lines, line)
-	}
-
-	input := strings.Join(lines, "\n")
-
-	// Run fzf (no delimiter needed with space-separated columns)
-	cmd := exec.Command("fzf",
-		"--height=40%",
-		"--reverse",
-		"--header=Select a repository",
-		"--ansi",
-	)
-
-	cmd.Stdin = strings.NewReader(input)
-	cmd.Stderr = os.Stderr
-
-	output, err := cmd.Output()
+	items, byID := selectItems(results)
+	selectedID, err := picker.Run(items)
 	if err != nil {
-		// User cancelled or error
-		return nil
+		exitWithError("Cannot open repository picker: %v. Use 'rog list' in a noninteractive session.", err)
 	}
-
-	selected := strings.TrimSpace(string(output))
-	if selected == "" {
-		return nil
+	if selectedID == "" {
+		return
 	}
+	selected := byID[selectedID]
+	if selected == nil {
+		exitWithError("Selected repository is no longer available")
+	}
+	if selectOpen {
+		openInEditor(selected)
+	} else {
+		fmt.Println(selected.AbsPath)
+	}
+}
 
-	// Extract repo name from selection (first field up to first double-space)
-	// The format is: "name  lang  path  description"
-	name := strings.TrimSpace(strings.Split(selected, "  ")[0])
-
-	// Find the repo by name
-	for _, repo := range repos {
-		if repo.Name == name {
-			return repo
+func selectItems(results []*index.Repo) ([]picker.Item, map[string]*index.Repo) {
+	items := make([]picker.Item, 0, len(results))
+	byID := make(map[string]*index.Repo, len(results))
+	for _, repo := range results {
+		status := "clean"
+		if repo.StatusUnavailable {
+			status = "status unavailable"
+		} else if repo.IsDirty {
+			status = "dirty"
 		}
+		items = append(items, picker.Item{ID: repo.AbsPath, Name: repo.Name, Root: repo.Root, Path: repo.AbsPath,
+			Language: repo.PrimaryLanguage, Status: status, Description: repo.Description})
+		byID[repo.AbsPath] = repo
 	}
-
-	return nil
-}
-
-// formatSelectLine formats a repository for display in fzf with aligned columns
-func formatSelectLine(repo *index.Repo, desc string) string {
-	lang := repo.PrimaryLanguage
-	if lang == "" {
-		lang = "unknown"
-	}
-
-	path := repo.Root + "/" + strings.ReplaceAll(repo.RelPath, "\\", "/")
-
-	// Use fixed-width formatting for aligned columns
-	// Name: 30 chars, Language: 12 chars, Path: 40 chars, Description: remaining
-	return fmt.Sprintf("%-30s  %-12s  %-40s  %s",
-		truncateString(repo.Name, 30),
-		truncateString(lang, 12),
-		truncateString(path, 40),
-		desc,
-	)
-}
-
-// truncateString truncates a string to maxLen, preserving it if shorter
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
+	return items, byID
 }
 
 func openInEditor(repo *index.Repo) {

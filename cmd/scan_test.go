@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/charmbracelet/x/ansi"
 	"os"
 	"strings"
 	"testing"
@@ -95,9 +96,10 @@ func TestRichProgressShowsRecentRepositorySafely(t *testing.T) {
 	line := renderer.Update(scanProgressSnapshot{
 		RootsTotal:  3,
 		ReposFound:  42,
+		CurrentRoot: "github",
 		CurrentRepo: "example\x1b[31m\nrepo",
 	})
-	if !strings.Contains(line, "42 repos") || !strings.Contains(line, "example[31mrepo") {
+	if !strings.Contains(line, "42 markers") || !strings.Contains(line, "github/example[31mrepo") {
 		t.Fatalf("progress line missing counters or repository: %q", line)
 	}
 	if strings.Count(line, "\x1b") != 1 || strings.Contains(line, "\n") {
@@ -118,5 +120,16 @@ func TestRichProgressFinishUsesTerminalSafeLineEnding(t *testing.T) {
 	}
 	if !strings.HasSuffix(output, "\r\n") || strings.Contains(strings.ReplaceAll(output, "\r\n", ""), "\n") {
 		t.Fatalf("rich summary has a bare newline: %q", output)
+	}
+}
+
+func TestRichProgressFitsNarrowTerminal(t *testing.T) {
+	renderer := richProgressRenderer{}
+	line := renderer.renderLineWidth("scan", scanProgressSnapshot{RootsTotal: 3, ReposFound: 261, CurrentRepo: "repository-with-a-long-name"}, 48)
+	if strings.Contains(line, "refreshed") || !strings.Contains(line, "261 markers") {
+		t.Fatalf("wrong compact line: %q", line)
+	}
+	if got := ansi.StringWidth(line); got > 47 {
+		t.Fatalf("line width %d exceeds terminal: %q", got, line)
 	}
 }

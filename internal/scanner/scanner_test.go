@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -267,33 +268,26 @@ func TestExtractReadmeDescriptionSentenceExtraction(t *testing.T) {
 	}
 }
 
-func TestWalkRootWithFdFindsOnlyGitMarkers(t *testing.T) {
-	fdCommand := findFdCommand()
-	if fdCommand == "" {
-		t.Skip("fd or fdfind is not installed")
-	}
-
+func TestWalkRootNativeFindsGitMarkers(t *testing.T) {
 	rootPath := t.TempDir()
-	for _, name := range []string{"regular", "worktree", "not-a-repo", "excluded"} {
-		require.NoError(t, os.Mkdir(filepath.Join(rootPath, name), 0755))
+	for _, name := range []string{"regular", "regular/nested", "worktree", "not-a-repo", "excluded"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(rootPath, name), 0755))
 	}
-	require.NoError(t, os.Mkdir(filepath.Join(rootPath, "regular", ".git"), 0755))
+	for _, name := range []string{"regular", "regular/nested", "excluded"} {
+		require.NoError(t, os.Mkdir(filepath.Join(rootPath, name, ".git"), 0755))
+	}
 	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "worktree", ".git"), []byte("gitdir: elsewhere"), 0644))
-	require.NoError(t, os.Mkdir(filepath.Join(rootPath, "not-a-repo", ".github"), 0755))
-	require.NoError(t, os.Mkdir(filepath.Join(rootPath, "excluded", ".git"), 0755))
-
-	root := config.Root{Path: rootPath, MaxDepth: 1, Exclude: []string{"excluded"}}
+	root := config.Root{Path: rootPath, MaxDepth: 2, Exclude: []string{"excluded"}}
 	scan := New(&config.Config{GlobalExcludes: []string{".git"}}, nil)
 	repos := make(chan string, 4)
-	require.NoError(t, scan.walkRootWithFd(fdCommand, root, repos))
+	require.NoError(t, scan.walkRootNative(context.Background(), root, repos))
 	close(repos)
-
 	var found []string
 	for repo := range repos {
 		found = append(found, repo)
 	}
 	sort.Strings(found)
-	assert.Equal(t, []string{filepath.Join(rootPath, "regular"), filepath.Join(rootPath, "worktree")}, found)
+	assert.Equal(t, []string{filepath.Join(rootPath, "regular"), filepath.Join(rootPath, "regular", "nested"), filepath.Join(rootPath, "worktree")}, found)
 }
 
 func TestScanDryRunCountsRepositoriesOnce(t *testing.T) {
@@ -307,17 +301,6 @@ func TestScanDryRunCountsRepositoriesOnce(t *testing.T) {
 	scan := New(cfg, nil).WithDryRun(true)
 	require.NoError(t, scan.Scan())
 	assert.Equal(t, 2, scan.GetMetrics().ReposFound)
-}
-
-func TestWSLRepoPathFromGitMarker(t *testing.T) {
-	got := wslRepoPathFromGitMarker("Ubuntu", "/home/user/projects/example/.git")
-	assert.Equal(t, `\\wsl$\Ubuntu\home\user\projects\example`, got)
-}
-
-func TestRepoPathFromGitMarkerWithTrailingSeparator(t *testing.T) {
-	repoPath := filepath.Join(t.TempDir(), "project")
-	marker := filepath.Join(repoPath, ".git") + string(filepath.Separator)
-	assert.Equal(t, repoPath, repoPathFromGitMarker(marker))
 }
 
 func TestFindRootIncludesRootAndHiddenRepository(t *testing.T) {

@@ -1,9 +1,13 @@
 package cmd
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -15,15 +19,18 @@ import (
 	"github.com/Geogboe/rog/internal/llm"
 	"github.com/Geogboe/rog/internal/logger"
 	"github.com/Geogboe/rog/internal/scanner"
+	"github.com/Geogboe/rog/internal/wslbridge"
 )
 
 var (
-	scanRemote      bool
-	scanLLM         bool
-	scanRefreshMeta bool
-	scanDryRun      bool
-	scanFull        bool
-	scanProgress    string
+	scanRemote              bool
+	scanLLM                 bool
+	scanRefreshMeta         bool
+	scanDryRun              bool
+	scanFull                bool
+	scanProgress            string
+	scanTimings             bool
+	approveWSLWorkerInstall bool
 )
 
 var scanCmd = &cobra.Command{
@@ -50,7 +57,9 @@ func init() {
 	rootCmd.AddCommand(scanCmd)
 	scanCmd.Flags().BoolVar(&scanDryRun, "dry-run", false, "Show scan metrics without processing (for debugging performance)")
 	scanCmd.Flags().BoolVar(&scanFull, "full", false, "Refresh Git metadata and status for every repository")
+	scanCmd.Flags().BoolVar(&approveWSLWorkerInstall, "approve-wsl-worker-install", false, "Approve installing the bundled scanner in configured WSL distros")
 	scanCmd.Flags().StringVar(&scanProgress, "progress", "", "Progress mode: auto, off, plain, rich")
+	scanCmd.Flags().BoolVar(&scanTimings, "timings", false, "Show discovery, Git, metadata, transport, and index timings")
 	scanCmd.Flags().BoolVar(&scanRemote, "remote", false, "Check remote status (ahead/behind)")
 	scanCmd.Flags().BoolVar(&scanLLM, "llm", false, "Use LLM to enrich metadata (use with --refresh-meta to update existing LLM metadata)")
 
@@ -98,6 +107,9 @@ func runScan(cmd *cobra.Command, args []string) {
 	// Create scanner
 	reuseExisting := !scanFull && !scanRemote
 	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote).WithDryRun(scanDryRun).WithReuseExisting(reuseExisting)
+	if runtime.GOOS == "windows" {
+		scan.WithWSLScan((wslbridge.Bridge{Approve: approveWSLWorker}).Scan)
+	}
 	fmt.Fprint(os.Stdout, renderer.Start(scanProgressSnapshot{
 		Phase:      scanPhaseScan,
 		RootsTotal: len(cfg.Roots),
@@ -116,12 +128,16 @@ func runScan(cmd *cobra.Command, args []string) {
 				case <-ticker.C:
 					metrics := scan.SnapshotMetrics()
 					fmt.Fprint(os.Stdout, renderer.Update(scanProgressSnapshot{
-						Phase:          scanPhaseScan,
-						RootsTotal:     metrics.RootsTotal,
-						RootsCompleted: metrics.RootsCompleted,
-						ReposFound:     metrics.ReposFound,
-						CurrentRepo:    metrics.CurrentRepo,
-						Duration:       time.Since(start),
+						Phase:             scanPhaseScan,
+						RootsTotal:        metrics.RootsTotal,
+						RootsCompleted:    metrics.RootsCompleted,
+						ReposFound:        metrics.ReposFound,
+						ReposReused:       metrics.ReposReused,
+						ReposRefreshed:    metrics.ReposRefreshed,
+						StatusUnavailable: metrics.StatusUnavailable,
+						CurrentRoot:       metrics.CurrentRoot,
+						CurrentRepo:       metrics.CurrentRepo,
+						Duration:          time.Since(start),
 					}))
 				case <-stopProgress:
 					return
@@ -130,30 +146,40 @@ func runScan(cmd *cobra.Command, args []string) {
 		}()
 	}
 
-	// Scan repositories
-	if err := scan.Scan(); err != nil {
-		if renderer.Mode() == progressModeRich {
-			close(stopProgress)
-			progressWg.Wait()
-			fmt.Fprint(os.Stdout, "\r"+clearLine())
-		}
-		exitWithError("Scan failed: %v", err)
-	}
+	// Scan repositories. Cancellation leaves the saved index untouched.
+	ctx, stopSignals := signal.NotifyContext(cmd.Context(), os.Interrupt)
+	defer stopSignals()
+	scanErr := scan.ScanContext(ctx)
 	if renderer.Mode() == progressModeRich {
 		close(stopProgress)
 		progressWg.Wait()
+		if scanErr != nil {
+			fmt.Fprint(os.Stdout, "\r"+clearLine())
+		}
+	}
+	var incomplete *scanner.IncompleteError
+	if scanErr != nil && !errors.As(scanErr, &incomplete) {
+		exitWithError("Scan failed: %v", scanErr)
 	}
 
 	// Show metrics if dry-run
 	if scanDryRun {
 		metrics := scan.GetMetrics()
 		fmt.Print(renderDryRunMetrics(metrics))
+		if scanTimings {
+			metrics := scan.SnapshotMetrics()
+			fmt.Print(renderStageTimings(metrics.DiscoveryDuration, metrics.GitDuration, metrics.MetadataDuration, metrics.TransportDuration, 0))
+		}
+		if incomplete != nil {
+			fmt.Fprintln(os.Stderr, "Scan incomplete:", incomplete)
+			os.Exit(2)
+		}
 		return
 	}
 
 	// Remove stale entries
 	cleanupStart := time.Now()
-	removed := idx.RemoveStaleExcept(scan.FoundPaths())
+	removed := idx.RemoveStaleInRoots(scan.FoundPaths(), scan.CompletedRoots())
 	logger.Verbose("Stale cleanup took %s", time.Since(cleanupStart).Round(time.Millisecond))
 
 	// LLM enrichment if requested
@@ -173,22 +199,39 @@ func runScan(cmd *cobra.Command, args []string) {
 	if err := idx.Save(); err != nil {
 		exitWithError("Failed to save index: %v", err)
 	}
-	logger.Verbose("Index save took %s", time.Since(saveStart).Round(time.Millisecond))
+	indexDuration := time.Since(saveStart)
+	logger.Verbose("Index save took %s", indexDuration.Round(time.Millisecond))
 
 	duration := time.Since(start)
 	fmt.Fprint(os.Stdout, renderer.Finish(scanProgressSnapshot{
-		Phase:        scanPhaseDone,
-		RootsTotal:   len(cfg.Roots),
-		ReposFound:   idx.Count(),
-		StaleRemoved: removed,
-		Duration:     duration,
+		Phase:          scanPhaseDone,
+		RootsTotal:     len(cfg.Roots),
+		RootsSucceeded: len(scan.CompletedRoots()),
+		ReposFound:     scan.SnapshotMetrics().ReposFound,
+		Indexed:        idx.Count(),
+		StaleRemoved:   removed,
+		Incomplete:     incomplete != nil,
+		Duration:       duration,
 	}))
+	if incomplete != nil {
+		fmt.Fprintln(os.Stderr, "Scan incomplete:", incomplete)
+	}
+	if scan.GetMetrics().StatusUnavailable > 0 {
+		fmt.Fprintf(os.Stderr, "Git status unavailable for %d repositories (%d timed out); run 'rog scan --full --verbose' to retry and inspect failures.\n", scan.GetMetrics().StatusUnavailable, scan.GetMetrics().StatusTimeouts)
+	}
+	if scanTimings {
+		metrics := scan.SnapshotMetrics()
+		fmt.Print(renderStageTimings(metrics.DiscoveryDuration, metrics.GitDuration, metrics.MetadataDuration, metrics.TransportDuration, indexDuration))
+	}
 	if reuseExisting && scan.GetMetrics().ReposReused > 0 {
 		lineEnd := "\n"
 		if renderer.Mode() == progressModeRich {
 			lineEnd = "\r\n"
 		}
 		fmt.Fprintf(os.Stdout, "Reused metadata for %d indexed repositories. Run 'rog scan --full' to refresh Git state.%s", scan.GetMetrics().ReposReused, lineEnd)
+	}
+	if incomplete != nil {
+		os.Exit(2)
 	}
 }
 
@@ -256,9 +299,9 @@ func renderDryRunMetrics(metrics *scanner.ScanMetrics) string {
 
 	fmt.Fprintf(&b, "Scan Metrics (Dry Run)\n")
 	fmt.Fprintf(&b, "Duration:             %v\n", duration.Round(time.Millisecond))
-	fmt.Fprintf(&b, "Repositories Found:   %d\n", metrics.ReposFound)
+	fmt.Fprintf(&b, "Git Markers Found:   %d\n", metrics.ReposFound)
 	if metrics.DirsScanned == 0 {
-		fmt.Fprintln(&b, "Directory metrics are unavailable with fd/fdfind discovery.")
+		fmt.Fprintln(&b, "Directory counts are unavailable for this scan.")
 	} else {
 		fmt.Fprintf(&b, "Total Directories:    %d\n", metrics.TotalDirs)
 		fmt.Fprintf(&b, "Directories Scanned:  %d\n", metrics.DirsScanned)
@@ -275,7 +318,7 @@ func renderDryRunMetrics(metrics *scanner.ScanMetrics) string {
 			fmt.Fprintf(&b, "  %.0f dirs/sec\n", float64(metrics.DirsScanned)/duration.Seconds())
 			fmt.Fprintf(&b, "  %.2f ms per dir\n", duration.Seconds()*1000.0/float64(metrics.DirsScanned))
 		}
-		fmt.Fprintf(&b, "  %.0f repos/sec\n", float64(metrics.ReposFound)/duration.Seconds())
+		fmt.Fprintf(&b, "  %.0f markers/sec\n", float64(metrics.ReposFound)/duration.Seconds())
 	}
 
 	if metrics.TotalDirs > 0 && metrics.DirsScanned > 0 && metrics.DirsExcluded > 0 {
@@ -284,4 +327,36 @@ func renderDryRunMetrics(metrics *scanner.ScanMetrics) string {
 	}
 
 	return b.String()
+}
+
+// approveWSLWorker asks before the first write to a distro's worker cache.
+func approveWSLWorker(distro, cachePath string) bool {
+	if scanDryRun {
+		return false
+	}
+	if approveWSLWorkerInstall {
+		return true
+	}
+	input, err := os.OpenFile("CONIN$", os.O_RDONLY, 0)
+	if err != nil {
+		return false
+	}
+	defer input.Close()
+	output, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+	if err != nil {
+		return false
+	}
+	defer output.Close()
+	fmt.Fprintf(output, "rog needs to install its bundled scanner in WSL distro %s\nPath: %s\nCreate or replace this cached executable? [y/N] ", distro, cachePath)
+	answer, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(answer), "y") || strings.EqualFold(strings.TrimSpace(answer), "yes")
+}
+
+func renderStageTimings(discovery, git, metadata, transport, indexWrite time.Duration) string {
+	return fmt.Sprintf("Timings: discovery %s, Git %s, metadata %s, WSL transport %s, index write %s\n",
+		discovery.Round(time.Millisecond), git.Round(time.Millisecond),
+		metadata.Round(time.Millisecond), transport.Round(time.Millisecond), indexWrite.Round(time.Millisecond))
 }
