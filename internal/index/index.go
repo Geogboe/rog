@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,10 +18,20 @@ import (
 
 // Index represents the repository index
 type Index struct {
-	Repos     map[string]*Repo `json:"repos"` // Key: absolute path
-	UpdatedAt time.Time        `json:"updated_at"`
-	mu        sync.RWMutex
+	Repos           map[string]*Repo          `json:"repos"` // Key: absolute path
+	RejectedMarkers map[string]RejectedMarker `json:"rejected_markers,omitempty"`
+	UpdatedAt       time.Time                 `json:"updated_at"`
+	mu              sync.RWMutex
 }
+
+// RejectedMarker records an invalid Git marker until it changes or ages out.
+type RejectedMarker struct {
+	ModTime   time.Time `json:"mod_time"`
+	Size      int64     `json:"size"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+const rejectedMarkerMaxAge = 24 * time.Hour
 
 // Repo represents a single repository entry
 type Repo struct {
@@ -63,8 +75,9 @@ type Repo struct {
 // New creates a new empty index
 func New() *Index {
 	return &Index{
-		Repos:     make(map[string]*Repo),
-		UpdatedAt: time.Now(),
+		Repos:           make(map[string]*Repo),
+		RejectedMarkers: make(map[string]RejectedMarker),
+		UpdatedAt:       time.Now(),
 	}
 }
 
@@ -90,8 +103,33 @@ func Load() (*Index, error) {
 	if idx.Repos == nil {
 		idx.Repos = make(map[string]*Repo)
 	}
+	if idx.RejectedMarkers == nil {
+		idx.RejectedMarkers = make(map[string]RejectedMarker)
+	}
+	if runtime.GOOS == "windows" {
+		idx.canonicalizeWSLPaths()
+	}
 
 	return &idx, nil
+}
+
+// canonicalizeWSLPaths preserves cached metadata when the WSL UNC alias changes.
+func (idx *Index) canonicalizeWSLPaths() {
+	const oldPrefix = `\\wsl.localhost\`
+	const newPrefix = `\\wsl$\`
+	for key, repo := range idx.Repos {
+		if repo == nil || !repo.IsWSL || !strings.HasPrefix(strings.ToLower(repo.AbsPath), oldPrefix) {
+			continue
+		}
+		newPath := newPrefix + repo.AbsPath[len(oldPrefix):]
+		delete(idx.Repos, key)
+		if current, exists := idx.Repos[newPath]; exists && current.LastScanAt.After(repo.LastScanAt) {
+			continue
+		}
+		repo.AbsPath = newPath
+		repo.ID = generateID(newPath)
+		idx.Repos[newPath] = repo
+	}
 }
 
 // Save saves the index to disk atomically
@@ -207,16 +245,64 @@ func (idx *Index) Count() int {
 	return len(idx.Repos)
 }
 
-// RemoveStale removes repositories that no longer exist on disk
+// IsRejectedUnchanged reports whether a previously invalid marker can be skipped.
+func (idx *Index) IsRejectedUnchanged(repoPath string) bool {
+	idx.mu.RLock()
+	marker, ok := idx.RejectedMarkers[repoPath]
+	idx.mu.RUnlock()
+	if !ok || time.Since(marker.CheckedAt) >= rejectedMarkerMaxAge {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(repoPath, ".git"))
+	return err == nil && info.Size() == marker.Size && info.ModTime().Equal(marker.ModTime)
+}
+
+// RememberRejected records the current marker fingerprint after Git rejects it.
+func (idx *Index) RememberRejected(repoPath string) {
+	info, err := os.Stat(filepath.Join(repoPath, ".git"))
+	if err != nil {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.RejectedMarkers == nil {
+		idx.RejectedMarkers = make(map[string]RejectedMarker)
+	}
+	idx.RejectedMarkers[repoPath] = RejectedMarker{ModTime: info.ModTime(), Size: info.Size(), CheckedAt: time.Now()}
+}
+
+// ForgetRejected removes a negative cache entry when a repository becomes valid.
+func (idx *Index) ForgetRejected(repoPath string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	delete(idx.RejectedMarkers, repoPath)
+}
+
+// RemoveStale removes repositories that no longer exist on disk.
 func (idx *Index) RemoveStale() int {
+	return idx.RemoveStaleExcept(nil)
+}
+
+// RemoveStaleExcept skips filesystem checks for repositories found during this scan.
+func (idx *Index) RemoveStaleExcept(foundPaths map[string]struct{}) int {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
 	removed := 0
 	for path, repo := range idx.Repos {
+		if _, found := foundPaths[path]; found {
+			continue
+		}
 		if _, err := os.Stat(filepath.Join(repo.AbsPath, ".git")); os.IsNotExist(err) {
 			delete(idx.Repos, path)
 			removed++
+		}
+	}
+	if foundPaths != nil {
+		for path := range idx.RejectedMarkers {
+			if _, found := foundPaths[path]; !found {
+				delete(idx.RejectedMarkers, path)
+			}
 		}
 	}
 

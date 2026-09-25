@@ -103,7 +103,7 @@ func (r richProgressRenderer) Update(snapshot scanProgressSnapshot) string {
 }
 
 func (r richProgressRenderer) Finish(snapshot scanProgressSnapshot) string {
-	return "\r" + clearLine() + fmt.Sprintf("%s Scan completed in %s\nRoots scanned: %d\nRepositories found: %d\nStale removed: %d\n",
+	return "\r" + clearLine() + fmt.Sprintf("%s Scan completed in %s (%d roots, %d repositories, %d stale removed)\r\n",
 		r.label("done"),
 		formatProgressDuration(snapshot.Duration),
 		snapshot.RootsTotal,

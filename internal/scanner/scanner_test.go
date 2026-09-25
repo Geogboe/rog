@@ -309,6 +309,11 @@ func TestScanDryRunCountsRepositoriesOnce(t *testing.T) {
 	assert.Equal(t, 2, scan.GetMetrics().ReposFound)
 }
 
+func TestWSLRepoPathFromGitMarker(t *testing.T) {
+	got := wslRepoPathFromGitMarker("Ubuntu", "/home/user/projects/example/.git")
+	assert.Equal(t, `\\wsl$\Ubuntu\home\user\projects\example`, got)
+}
+
 func TestRepoPathFromGitMarkerWithTrailingSeparator(t *testing.T) {
 	repoPath := filepath.Join(t.TempDir(), "project")
 	marker := filepath.Join(repoPath, ".git") + string(filepath.Separator)
@@ -372,4 +377,22 @@ func TestScanReusesKnownReposAndDiscoversNewOnes(t *testing.T) {
 	assert.NotEqual(t, "cached-branch", refreshed.CurrentBranch)
 	assert.True(t, refreshed.LastScanAt.After(lastScan))
 	assert.Zero(t, fullScan.GetMetrics().ReposReused)
+}
+
+func TestScanCachesInvalidMarkerUntilFullRefresh(t *testing.T) {
+	rootPath := t.TempDir()
+	repoPath := filepath.Join(rootPath, "invalid")
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".git"), 0755))
+	t.Setenv("ROG_DATA", t.TempDir())
+	cfg := &config.Config{Roots: []config.Root{{Name: "projects", Path: rootPath, MaxDepth: 1}}}
+	idx := index.New()
+
+	require.NoError(t, New(cfg, idx).WithReuseExisting(true).Scan())
+	first, ok := idx.RejectedMarkers[repoPath]
+	require.True(t, ok)
+	require.NoError(t, New(cfg, idx).WithReuseExisting(true).Scan())
+	assert.Equal(t, first.CheckedAt, idx.RejectedMarkers[repoPath].CheckedAt)
+
+	require.NoError(t, New(cfg, idx).WithReuseExisting(false).Scan())
+	assert.True(t, idx.RejectedMarkers[repoPath].CheckedAt.After(first.CheckedAt))
 }

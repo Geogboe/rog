@@ -13,6 +13,7 @@ import (
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/llm"
+	"github.com/Geogboe/rog/internal/logger"
 	"github.com/Geogboe/rog/internal/scanner"
 )
 
@@ -150,7 +151,9 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 
 	// Remove stale entries
-	removed := idx.RemoveStale()
+	cleanupStart := time.Now()
+	removed := idx.RemoveStaleExcept(scan.FoundPaths())
+	logger.Verbose("Stale cleanup took %s", time.Since(cleanupStart).Round(time.Millisecond))
 
 	// LLM enrichment if requested
 	if scanLLM {
@@ -165,9 +168,11 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 
 	// Save index
+	saveStart := time.Now()
 	if err := idx.Save(); err != nil {
 		exitWithError("Failed to save index: %v", err)
 	}
+	logger.Verbose("Index save took %s", time.Since(saveStart).Round(time.Millisecond))
 
 	duration := time.Since(start)
 	fmt.Fprint(os.Stdout, renderer.Finish(scanProgressSnapshot{
@@ -178,7 +183,11 @@ func runScan(cmd *cobra.Command, args []string) {
 		Duration:     duration,
 	}))
 	if reuseExisting && scan.GetMetrics().ReposReused > 0 {
-		fmt.Fprintf(os.Stdout, "Reused metadata for %d indexed repositories. Run 'rog scan --full' to refresh Git state.\n", scan.GetMetrics().ReposReused)
+		lineEnd := "\n"
+		if renderer.Mode() == progressModeRich {
+			lineEnd = "\r\n"
+		}
+		fmt.Fprintf(os.Stdout, "Reused metadata for %d indexed repositories. Run 'rog scan --full' to refresh Git state.%s", scan.GetMetrics().ReposReused, lineEnd)
 	}
 }
 

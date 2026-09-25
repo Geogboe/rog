@@ -222,3 +222,56 @@ func TestGenerateID(t *testing.T) {
 	// ID should be 16 chars (hex of first 8 bytes of hash)
 	assert.Equal(t, 16, len(id1))
 }
+
+func TestCanonicalizeWSLPathsPreservesCachedMetadata(t *testing.T) {
+	oldPath := `\\wsl.localhost\Ubuntu\home\user\project`
+	newPath := `\\wsl$\Ubuntu\home\user\project`
+	idx := New()
+	original := &Repo{ID: generateID(oldPath), AbsPath: oldPath, IsWSL: true, CurrentBranch: "cached", LastScanAt: time.Now()}
+	idx.Repos[oldPath] = original
+
+	idx.canonicalizeWSLPaths()
+
+	assert.Len(t, idx.Repos, 1)
+	_, oldExists := idx.Repos[oldPath]
+	assert.False(t, oldExists)
+	got, newExists := idx.Repos[newPath]
+	require.True(t, newExists)
+	assert.Equal(t, "cached", got.CurrentBranch)
+	assert.Equal(t, original.LastScanAt, got.LastScanAt)
+	assert.Equal(t, generateID(newPath), got.ID)
+}
+
+func TestRemoveStaleExceptSkipsDiscoveredRepositories(t *testing.T) {
+	idx := New()
+	found := filepath.Join(t.TempDir(), "discovered")
+	missing := filepath.Join(t.TempDir(), "missing")
+	idx.Upsert(&Repo{AbsPath: found})
+	idx.Upsert(&Repo{AbsPath: missing})
+
+	removed := idx.RemoveStaleExcept(map[string]struct{}{found: {}})
+
+	assert.Equal(t, 1, removed)
+	_, foundExists := idx.Get(found)
+	assert.True(t, foundExists)
+	_, missingExists := idx.Get(missing)
+	assert.False(t, missingExists)
+}
+
+func TestRejectedMarkerExpiresWhenChangedOrOld(t *testing.T) {
+	repoPath := filepath.Join(t.TempDir(), "candidate")
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".git"), 0755))
+	idx := New()
+	idx.RememberRejected(repoPath)
+	assert.True(t, idx.IsRejectedUnchanged(repoPath))
+
+	changed := time.Now().Add(2 * time.Second)
+	require.NoError(t, os.Chtimes(filepath.Join(repoPath, ".git"), changed, changed))
+	assert.False(t, idx.IsRejectedUnchanged(repoPath))
+
+	idx.RememberRejected(repoPath)
+	marker := idx.RejectedMarkers[repoPath]
+	marker.CheckedAt = time.Now().Add(-25 * time.Hour)
+	idx.RejectedMarkers[repoPath] = marker
+	assert.False(t, idx.IsRejectedUnchanged(repoPath))
+}

@@ -60,22 +60,18 @@ func ExecInDistro(distro string, command string, args ...string) *exec.Cmd {
 
 // ExecInDistroContext executes a command in a specific WSL distro with cancellation.
 func ExecInDistroContext(ctx context.Context, distro string, command string, args ...string) *exec.Cmd {
-	// Build WSL command: wsl -d <distro> -- <command> <args...>
-	wslArgs := []string{"-d", distro, "--", command}
+	// --exec passes arguments directly without a second shell expansion.
+	wslArgs := []string{"-d", distro, "--exec", command}
 	wslArgs = append(wslArgs, args...)
 
 	return exec.CommandContext(ctx, "wsl", wslArgs...)
 }
 
-// TranslatePathToWindows converts a WSL path to Windows UNC path
-// Example: /home/user/project -> \\wsl.localhost\Ubuntu\home\user\project
+// TranslatePathToWindows converts a WSL path to the Windows UNC share.
+// Example: /home/user/project -> \\wsl$\Ubuntu\home\user\project
 func TranslatePathToWindows(distro, wslPath string) string {
-	// Remove leading slash
 	wslPath = strings.TrimPrefix(wslPath, "/")
-
-	// Use \\wsl.localhost\ or \\wsl$\ depending on Windows version
-	// \\wsl.localhost\ is newer and more reliable
-	return fmt.Sprintf("\\\\wsl.localhost\\%s\\%s", distro, wslPath)
+	return fmt.Sprintf(`\\wsl$\%s\%s`, distro, strings.ReplaceAll(wslPath, "/", `\`))
 }
 
 // ValidateRoot validates a WSL root configuration

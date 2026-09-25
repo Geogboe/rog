@@ -91,3 +91,14 @@ func TestAutoProgressFallsBackToPlainWhenNotTTY(t *testing.T) {
 }
 
 const unicodeMaxASCII = 127
+
+func TestRichProgressFinishUsesTerminalSafeLineEnding(t *testing.T) {
+	renderer := richProgressRenderer{}
+	output := renderer.Finish(scanProgressSnapshot{RootsTotal: 3, ReposFound: 753})
+	if !strings.Contains(output, "[done] Scan completed") {
+		t.Fatalf("missing final summary: %q", output)
+	}
+	if !strings.HasSuffix(output, "\r\n") || strings.Contains(strings.ReplaceAll(output, "\r\n", ""), "\n") {
+		t.Fatalf("rich summary has a bare newline: %q", output)
+	}
+}

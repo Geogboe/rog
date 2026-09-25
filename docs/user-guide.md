@@ -89,8 +89,11 @@ rog scan --progress plain
 - Discovers all Git repositories in configured roots
 - Reuses indexed Git and repository metadata for known repositories; values such as dirty/clean state may be stale until a full scan
 - Extracts Git metadata, language, and `.rogmeta.yml` metadata for new repositories
+- Rechecks previously rejected `.git` markers when they change or after 24 hours; `--full` retries them immediately
 - With `--full`, refreshes those fields for every repository; each working-tree status check has a 3-second limit, and a timed-out check is shown as `status unknown` and excluded from `--clean` and `--dirty` results
 - Optionally calls LLM to enrich missing metadata
+
+On Windows, WSL roots are discovered with `fd` or `fdfind` inside the configured distro. Scanning starts the distro if needed; Windows-facing paths use the `\\wsl$\` share.
 
 **Performance:** Scan time depends on the number and location of configured roots. `--full` also checks every repository's Git state and can be substantially slower.
 

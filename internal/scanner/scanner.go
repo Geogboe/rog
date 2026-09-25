@@ -3,6 +3,7 @@ package scanner
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,8 @@ import (
 	"github.com/Geogboe/rog/internal/wsl"
 )
 
+var errNotGitRepo = errors.New("not a git repository")
+
 // Scanner handles repository scanning
 type Scanner struct {
 	cfg           *config.Config
@@ -31,6 +34,8 @@ type Scanner struct {
 	workers       int
 	dryRun        bool
 	metrics       *ScanMetrics
+	foundPaths    map[string]struct{}
+	foundMu       sync.Mutex
 }
 
 // ScanMetrics tracks scanning statistics
@@ -59,10 +64,11 @@ func New(cfg *config.Config, idx *index.Index) *Scanner {
 		workers = 8
 	}
 	return &Scanner{
-		cfg:     cfg,
-		idx:     idx,
-		workers: workers,
-		metrics: &ScanMetrics{},
+		cfg:        cfg,
+		idx:        idx,
+		workers:    workers,
+		metrics:    &ScanMetrics{},
+		foundPaths: make(map[string]struct{}),
 	}
 }
 
@@ -112,8 +118,22 @@ func (s *Scanner) SnapshotMetrics() ScanMetrics {
 	}
 }
 
+// FoundPaths returns repository paths discovered by the last scan.
+func (s *Scanner) FoundPaths() map[string]struct{} {
+	s.foundMu.Lock()
+	defer s.foundMu.Unlock()
+	found := make(map[string]struct{}, len(s.foundPaths))
+	for path := range s.foundPaths {
+		found[path] = struct{}{}
+	}
+	return found
+}
+
 // Scan scans all configured roots for git repositories
 func (s *Scanner) Scan() error {
+	s.foundMu.Lock()
+	s.foundPaths = make(map[string]struct{})
+	s.foundMu.Unlock()
 	s.metrics.StartTime = time.Now()
 	defer func() {
 		s.metrics.EndTime = time.Now()
@@ -163,6 +183,9 @@ func (s *Scanner) Scan() error {
 			go func() {
 				defer wg.Done()
 				for repoPath := range repoChan {
+					s.foundMu.Lock()
+					s.foundPaths[repoPath] = struct{}{}
+					s.foundMu.Unlock()
 					if s.reuseExisting {
 						if existing, ok := s.idx.Get(repoPath); ok {
 							rootName, relPath := s.findRoot(repoPath)
@@ -173,10 +196,18 @@ func (s *Scanner) Scan() error {
 								continue
 							}
 						}
+						if s.idx.IsRejectedUnchanged(repoPath) {
+							continue
+						}
 					}
 					logger.Debug("Processing repository: %s", repoPath)
 					if err := s.processRepo(repoPath); err != nil {
+						if errors.Is(err, errNotGitRepo) && !strings.HasPrefix(strings.ToLower(repoPath), `\\wsl`) {
+							s.idx.RememberRejected(repoPath)
+						}
 						logger.Verbose("Failed to process %s: %v", repoPath, err)
+					} else {
+						s.idx.ForgetRejected(repoPath)
 					}
 				}
 			}()
@@ -200,8 +231,6 @@ func (s *Scanner) Scan() error {
 	// Walk each root in parallel
 	var rootWg sync.WaitGroup
 	for _, root := range s.cfg.Roots {
-		scanRoot := root
-		scanRoot.Path = rootScanPath(root)
 		rootWg.Add(1)
 		go func(r config.Root) {
 			defer rootWg.Done()
@@ -210,22 +239,33 @@ func (s *Scanner) Scan() error {
 				s.metrics.RootsCompleted++
 				s.metrics.mu.Unlock()
 			}()
-			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, r.Path, r.MaxDepth)
+			scanRoot := r
+			scanRoot.Path = rootScanPath(r)
+			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, scanRoot.Path, r.MaxDepth)
 
-			// Use fd if available, otherwise fall back to parallel walker
+			// Native Linux discovery avoids traversing WSL through a slow UNC path.
+			if r.WSL && runtime.GOOS == "windows" {
+				if err := s.walkWSLRootWithFd(r, repoChan); err == nil {
+					return
+				} else {
+					logger.Verbose("Native WSL fd failed for root %s; trying Windows discovery: %v", r.Name, err)
+				}
+			}
+
+			// Use fd if available, otherwise fall back to parallel walker.
 			if fdCommand != "" {
-				if err := s.walkRootWithFd(fdCommand, r, repoChan); err != nil {
+				if err := s.walkRootWithFd(fdCommand, scanRoot, repoChan); err != nil {
 					logger.Verbose("fd failed for root %s, falling back to built-in scanner: %v", r.Name, err)
-					if err := s.walkRootParallel(r, repoChan); err != nil {
+					if err := s.walkRootParallel(scanRoot, repoChan); err != nil {
 						logger.Verbose("Failed to walk root %s: %v", r.Name, err)
 					}
 				}
 			} else {
-				if err := s.walkRootParallel(r, repoChan); err != nil {
+				if err := s.walkRootParallel(scanRoot, repoChan); err != nil {
 					logger.Verbose("Failed to walk root %s: %v", r.Name, err)
 				}
 			}
-		}(scanRoot)
+		}(root)
 	}
 
 	// Wait for all roots to finish walking, then close channel
@@ -265,56 +305,83 @@ func findFdCommand() string {
 
 // walkRootWithFd uses fd or fdfind to find repository markers.
 func (s *Scanner) walkRootWithFd(fdCommand string, root config.Root, repoChan chan<- string) error {
-	// Build fd command
+	args := s.fdArgs(root)
+	logger.Debug("Running: %s %s", fdCommand, strings.Join(args, " "))
+
+	cmd := exec.Command(fdCommand, args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("fd command failed: %w", err)
+	}
+	return s.collectFdMarkers(&stdout, repoChan, repoPathFromGitMarker)
+}
+
+// walkWSLRootWithFd discovers WSL repositories on Linux rather than over UNC.
+func (s *Scanner) walkWSLRootWithFd(root config.Root, repoChan chan<- string) error {
+	// Validate markers within one WSL process. Starting wsl.exe for each invalid
+	// marker is slow, and a nested cache may contain a .git marker of its own.
+	const filter = `set -o pipefail
+command="$1"; shift
+"$command" "$@" | while IFS= read -r marker; do
+    marker=${marker%/}
+    repo=${marker%/.git}
+    top=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || continue
+    if [[ "$top" == "$repo" ]] || [[ "$(readlink -f "$top")" == "$(readlink -f "$repo")" ]]; then
+        printf '%s\n' "$marker"
+    fi
+done`
+	args := s.fdArgs(root)
+	var lastErr error
+	for _, command := range []string{"fd", "fdfind"} {
+		cmd := wsl.ExecInDistro(root.WSLDistro, "bash", append([]string{"-c", filter, "rog-fd", command}, args...)...)
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err != nil {
+			lastErr = err
+			continue
+		}
+		return s.collectFdMarkers(&stdout, repoChan, func(marker string) string {
+			return wslRepoPathFromGitMarker(root.WSLDistro, marker)
+		})
+	}
+	return fmt.Errorf("fd/fdfind unavailable in WSL distro %s: %w", root.WSLDistro, lastErr)
+}
+
+func (s *Scanner) fdArgs(root config.Root) []string {
 	args := []string{
 		"-t", "d", "-t", "f", // .git directories and worktree files
 		"-H", "-I", // include hidden and ignored projects
 		"--max-depth", fmt.Sprintf("%d", root.MaxDepth+1), // marker is inside the repo
 		"-a", "-g", ".git", root.Path,
 	}
-
-	// Add excludes
-	excludes := make([]string, 0, len(s.cfg.GlobalExcludes)+len(root.Exclude))
-	excludes = append(excludes, s.cfg.GlobalExcludes...)
-	excludes = append(excludes, root.Exclude...)
-
-	for _, exclude := range excludes {
+	for _, exclude := range append(append([]string{}, s.cfg.GlobalExcludes...), root.Exclude...) {
 		if exclude != ".git" {
 			args = append(args, "-E", exclude)
 		}
 	}
+	return args
+}
 
-	logger.Debug("Running: %s %s", fdCommand, strings.Join(args, " "))
-
-	cmd := exec.Command(fdCommand, args...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("fd command failed: %w", err)
-	}
-
-	// Parse output (one .git path per line)
-	scanner := bufio.NewScanner(&stdout)
+func (s *Scanner) collectFdMarkers(output *bytes.Buffer, repoChan chan<- string, repoFromMarker func(string) string) error {
+	scanner := bufio.NewScanner(output)
 	for scanner.Scan() {
-		gitPath := strings.TrimSpace(scanner.Text())
+		gitPath := strings.TrimRight(strings.TrimSpace(scanner.Text()), `\/`)
 		if gitPath == "" {
 			continue
 		}
-		gitPath = strings.TrimRight(gitPath, `\/`)
-
-		// fd appends a separator to directory matches on Windows.
-		repoPath := normalizeScanPath(repoPathFromGitMarker(gitPath))
-
+		repoPath := normalizeScanPath(repoFromMarker(gitPath))
 		s.metrics.mu.Lock()
 		s.metrics.ReposFound++
 		s.metrics.mu.Unlock()
-
 		logger.Debug("Found git repository: %s", repoPath)
 		repoChan <- repoPath
 	}
-
 	return scanner.Err()
+}
+
+func wslRepoPathFromGitMarker(distro, gitPath string) string {
+	return wsl.TranslatePathToWindows(distro, path.Dir(path.Clean(gitPath)))
 }
 
 func repoPathFromGitMarker(gitPath string) string {
@@ -451,10 +518,10 @@ func (s *Scanner) processRepo(repoPath string) error {
 	if isWSL {
 		wslRepoPath = path.Join(rootConfig.Path, filepath.ToSlash(relPath))
 		if !git.IsGitRepoWSL(rootConfig.WSLDistro, wslRepoPath) {
-			return fmt.Errorf("not a git repository")
+			return errNotGitRepo
 		}
 	} else if !git.IsGitRepo(repoPath) {
-		return fmt.Errorf("not a git repository")
+		return errNotGitRepo
 	}
 
 	repo := &index.Repo{
