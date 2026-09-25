@@ -83,6 +83,9 @@ rog scan --llm --refresh-meta
 
 # Force plain progress output
 rog scan --progress plain
+
+# Separate discovery, Git, metadata, WSL transport, and index timings
+rog scan --timings
 ```
 
 **What it does:**
@@ -93,9 +96,9 @@ rog scan --progress plain
 - With `--full`, refreshes those fields for every repository; each working-tree status check has a 3-second limit, and a timed-out check is shown as `status unknown` and excluded from `--clean` and `--dirty` results
 - Optionally calls LLM to enrich missing metadata
 
-On Windows, WSL roots are discovered with `fd` or `fdfind` inside the configured distro. Scanning starts the distro if needed; Windows-facing paths use the `\\wsl$\` share.
+On Windows, rog launches one bundled Linux scanner process per configured WSL distro. Discovery and Git inspection run inside Linux; indexed paths remain `\\wsl$\...`. The first install prompts for the distro, exact cache path, and intended changes. Declining or running without a terminal skips that WSL root and preserves its indexed entries. Use `--approve-wsl-worker-install` for explicit unattended approval. `--dry-run` never installs a worker. The cache is `${XDG_CACHE_HOME:-$HOME/.cache}/rog/workers/<build-id>/` inside the distro. A matching cached worker launches without prompting. No `fd` or `fdfind` binary is needed.
 
-**Performance:** Scan time depends on the number and location of configured roots. `--full` also checks every repository's Git state and can be substantially slower.
+**Performance:** Scan time depends on the number and location of configured roots. `--full` also checks every repository's Git state and can be substantially slower. Progress reports discovered Git markers, refreshed/reused repositories, the active name, and elapsed time. The final summary reports the actual number of indexed repositories. A scan with skipped or failed roots exits with code 2, retains their index entries, and prints a reason. Cancelled scans leave the previous index intact.
 
 ### `rog list`
 
@@ -154,7 +157,7 @@ rog list --format yaml
 
 ### `rog select` / `rog sel`
 
-Interactively select a repository using fzf (if available).
+Interactively select a repository with rog's built-in picker. It shows name, root/path, language, status, and details. Type to filter; use arrows or Page Up/Down to move, Enter to select, and Escape or Ctrl+C to cancel. The picker writes only the chosen path to stdout and draws on the terminal, so command substitution works. If multiple results require a picker but no terminal is available, rog prints an actionable error.
 
 ```bash
 # Select from all repos
@@ -168,7 +171,7 @@ cd "$(rog select)"
 code "$(rog select api)"
 ```
 
-**Requirements:** `fzf` for interactive selection (falls back to plain list if not installed)
+**Requirements:** An interactive terminal for multiple matches. Neither `fzf` nor `fd` is required.
 
 ### `rog info`
 
