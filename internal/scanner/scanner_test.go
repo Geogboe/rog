@@ -1,10 +1,15 @@
 package scanner
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"testing"
 
+	"github.com/Geogboe/rog/internal/config"
+	"github.com/Geogboe/rog/internal/index"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -96,8 +101,8 @@ The actual description.`,
 			description: "should return empty string when only headers exist",
 		},
 		{
-			name: "empty file",
-			content: ``,
+			name:        "empty file",
+			content:     ``,
 			expected:    "",
 			description: "should handle empty file",
 		},
@@ -261,4 +266,116 @@ func TestExtractReadmeDescriptionSentenceExtraction(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestWalkRootNativeFindsGitMarkers(t *testing.T) {
+	rootPath := t.TempDir()
+	for _, name := range []string{"regular", "regular/nested", "worktree", "not-a-repo", "excluded"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(rootPath, name), 0755))
+	}
+	for _, name := range []string{"regular", "regular/nested", "excluded"} {
+		require.NoError(t, os.Mkdir(filepath.Join(rootPath, name, ".git"), 0755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(rootPath, "worktree", ".git"), []byte("gitdir: elsewhere"), 0644))
+	root := config.Root{Path: rootPath, MaxDepth: 2, Exclude: []string{"excluded"}}
+	scan := New(&config.Config{GlobalExcludes: []string{".git"}}, nil)
+	repos := make(chan string, 4)
+	require.NoError(t, scan.walkRootNative(context.Background(), root, repos))
+	close(repos)
+	var found []string
+	for repo := range repos {
+		found = append(found, repo)
+	}
+	sort.Strings(found)
+	assert.Equal(t, []string{filepath.Join(rootPath, "regular"), filepath.Join(rootPath, "regular", "nested"), filepath.Join(rootPath, "worktree")}, found)
+}
+
+func TestScanDryRunCountsRepositoriesOnce(t *testing.T) {
+	rootPath := t.TempDir()
+	for _, name := range []string{"first", "second"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(rootPath, name, ".git"), 0755))
+	}
+	t.Setenv("ROG_DATA", t.TempDir())
+
+	cfg := &config.Config{Roots: []config.Root{{Path: rootPath, MaxDepth: 1}}}
+	scan := New(cfg, nil).WithDryRun(true)
+	require.NoError(t, scan.Scan())
+	assert.Equal(t, 2, scan.GetMetrics().ReposFound)
+}
+
+func TestFindRootIncludesRootAndHiddenRepository(t *testing.T) {
+	rootPath := t.TempDir()
+	scan := New(&config.Config{Roots: []config.Root{{Name: "projects", Path: rootPath}}}, nil)
+
+	for _, tt := range []struct {
+		path string
+		rel  string
+	}{
+		{rootPath, ""},
+		{filepath.Join(rootPath, ".hidden"), ".hidden"},
+	} {
+		name, rel := scan.findRoot(tt.path)
+		assert.Equal(t, "projects", name)
+		assert.Equal(t, tt.rel, rel)
+	}
+}
+
+func TestNormalizeConfiguredRootPathWSLOnWindows(t *testing.T) {
+	got := normalizeConfiguredRootPath(config.Root{Path: "/home/user/projects/../projects", WSL: true}, true)
+	if got != "/home/user/projects" {
+		t.Fatalf("WSL root path = %q, want /home/user/projects", got)
+	}
+}
+
+func TestScanReusesKnownReposAndDiscoversNewOnes(t *testing.T) {
+	rootPath := t.TempDir()
+	known := filepath.Join(rootPath, "known")
+	newRepo := filepath.Join(rootPath, "new")
+	for _, repoPath := range []string{known, newRepo} {
+		cmd := exec.Command("git", "init", "--quiet", repoPath)
+		require.NoError(t, cmd.Run())
+	}
+	t.Setenv("ROG_DATA", t.TempDir())
+	idx := index.New()
+	idx.Upsert(&index.Repo{AbsPath: known, Name: "known", Root: "projects", RelPath: "known", CurrentBranch: "cached-branch"})
+	before, ok := idx.Get(known)
+	require.True(t, ok)
+	lastScan := before.LastScanAt
+
+	cfg := &config.Config{Roots: []config.Root{{Name: "projects", Path: rootPath, MaxDepth: 1}}}
+	scan := New(cfg, idx).WithReuseExisting(true)
+	require.NoError(t, scan.Scan())
+	got, ok := idx.Get(known)
+	require.True(t, ok)
+	assert.Equal(t, "cached-branch", got.CurrentBranch)
+	assert.Equal(t, lastScan, got.LastScanAt)
+	_, ok = idx.Get(newRepo)
+	assert.True(t, ok, "scan should index newly discovered repositories")
+	assert.Equal(t, 1, scan.GetMetrics().ReposReused)
+
+	fullScan := New(cfg, idx).WithReuseExisting(false)
+	require.NoError(t, fullScan.Scan())
+	refreshed, ok := idx.Get(known)
+	require.True(t, ok)
+	assert.NotEqual(t, "cached-branch", refreshed.CurrentBranch)
+	assert.True(t, refreshed.LastScanAt.After(lastScan))
+	assert.Zero(t, fullScan.GetMetrics().ReposReused)
+}
+
+func TestScanCachesInvalidMarkerUntilFullRefresh(t *testing.T) {
+	rootPath := t.TempDir()
+	repoPath := filepath.Join(rootPath, "invalid")
+	require.NoError(t, os.MkdirAll(filepath.Join(repoPath, ".git"), 0755))
+	t.Setenv("ROG_DATA", t.TempDir())
+	cfg := &config.Config{Roots: []config.Root{{Name: "projects", Path: rootPath, MaxDepth: 1}}}
+	idx := index.New()
+
+	require.NoError(t, New(cfg, idx).WithReuseExisting(true).Scan())
+	first, ok := idx.RejectedMarkers[repoPath]
+	require.True(t, ok)
+	require.NoError(t, New(cfg, idx).WithReuseExisting(true).Scan())
+	assert.Equal(t, first.CheckedAt, idx.RejectedMarkers[repoPath].CheckedAt)
+
+	require.NoError(t, New(cfg, idx).WithReuseExisting(false).Scan())
+	assert.True(t, idx.RejectedMarkers[repoPath].CheckedAt.After(first.CheckedAt))
 }

@@ -132,3 +132,12 @@ func TestLoadNonExistent(t *testing.T) {
 	assert.NotNil(t, cfg)
 	assert.NotEmpty(t, cfg.Roots)
 }
+
+func TestExpandRootPathWSLOnWindows(t *testing.T) {
+	got, err := expandRootPath(Root{Path: "/home/user/projects/../projects", WSL: true}, true)
+	require.NoError(t, err)
+	assert.Equal(t, "/home/user/projects", got)
+
+	_, err = expandRootPath(Root{Path: "relative/projects", WSL: true}, true)
+	require.ErrorContains(t, err, "must be absolute")
+}

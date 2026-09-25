@@ -108,8 +108,8 @@ rog scan --llm       # Call LLM API
 # Pipe to other tools
 rog list --format=json | jq '.[] | select(.language == "Go")'
 
-# Use with fzf
-cd $(rog select --format=path)
+# Select interactively
+cd "$(rog select)"
 
 # Combine with git
 rog list --dirty | while read repo; do
@@ -140,13 +140,13 @@ done
 - Simpler onboarding
 
 **Layers**:
-1. **Base**: Scan, list, filter (pure Go, zero dependencies)
-2. **Enhanced**: Interactive selection with `fzf` (if installed)
+1. **Base**: Scan, list, filter (no external search binaries)
+2. **Enhanced**: Interactive selection with the built-in picker
 3. **Intelligent**: LLM enrichment (if configured)
 4. **Advanced**: Remote status (if network available)
 
 **Implementation**:
-- Detect `fzf` at runtime, fallback to plain list
+- Use a controlling terminal for multiple matches; offer list for noninteractive use
 - LLM is opt-in via config + `--llm` flag
 - Remote operations require `--remote` flag
 - All features documented with requirements
@@ -351,7 +351,7 @@ When considering new features or changes, ask:
 ### Current Focus (V1)
 -  Fast scanning and indexing
 -  Flexible filtering and search
--  Interactive selection (via `fzf`)
+-  Interactive selection (built-in picker)
 -  Basic metadata (manual, auto-detected, LLM)
 
 ### Near Future (V2)

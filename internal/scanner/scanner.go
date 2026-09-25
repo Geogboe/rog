@@ -2,10 +2,11 @@ package scanner
 
 import (
 	"bufio"
-	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,50 +18,107 @@ import (
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/logger"
 	"github.com/Geogboe/rog/internal/metadata"
+	"github.com/Geogboe/rog/internal/scanner/discovery"
+	"github.com/Geogboe/rog/internal/wsl"
 )
+
+var errNotGitRepo = errors.New("not a git repository")
 
 // Scanner handles repository scanning
 type Scanner struct {
-	cfg         *config.Config
-	idx         *index.Index
-	globalMeta  *metadata.GlobalMeta
-	checkRemote bool
-	workers     int
-	dryRun      bool
-	metrics     *ScanMetrics
+	cfg           *config.Config
+	idx           *index.Index
+	globalMeta    *metadata.GlobalMeta
+	wslScan       WSLScanFunc
+	checkRemote   bool
+	reuseExisting bool
+	workers       int
+	dryRun        bool
+	metrics       *ScanMetrics
+	foundPaths    map[string]struct{}
+	completeRoots map[string]struct{}
+	foundMu       sync.Mutex
 }
 
 // ScanMetrics tracks scanning statistics
 type ScanMetrics struct {
-	DirsScanned    int
-	DirsExcluded   int
-	DirsSkipped    int // max depth
-	ReposFound     int
-	RootsTotal     int
-	RootsCompleted int
-	TotalDirs      int
-	DeepestPath    string
-	DeepestDepth   int
-	LargestDir     string
-	LargestDirSize int // subdirs count
-	StartTime      time.Time
-	EndTime        time.Time
-	mu             sync.Mutex
+	DirsScanned       int
+	DirsExcluded      int
+	DirsSkipped       int // max depth
+	ReposFound        int
+	ReposReused       int
+	ReposRefreshed    int
+	StatusUnavailable int
+	StatusTimeouts    int
+	DiscoveryDuration time.Duration
+	GitDuration       time.Duration
+	MetadataDuration  time.Duration
+	TransportDuration time.Duration
+	CurrentRoot       string
+	CurrentRepo       string
+	RootsTotal        int
+	RootsCompleted    int
+	TotalDirs         int
+	DeepestPath       string
+	DeepestDepth      int
+	LargestDir        string
+	LargestDirSize    int // subdirs count
+	StartTime         time.Time
+	EndTime           time.Time
+	mu                sync.Mutex
 }
 
 // New creates a new scanner
 func New(cfg *config.Config, idx *index.Index) *Scanner {
+	workers := runtime.NumCPU() * 2
+	if workers > 8 {
+		workers = 8
+	}
 	return &Scanner{
-		cfg:     cfg,
-		idx:     idx,
-		workers: runtime.NumCPU() * 2,
-		metrics: &ScanMetrics{},
+		cfg:           cfg,
+		idx:           idx,
+		workers:       workers,
+		metrics:       &ScanMetrics{},
+		foundPaths:    make(map[string]struct{}),
+		completeRoots: make(map[string]struct{}),
 	}
 }
 
 // WithRemoteCheck enables remote status checking
 func (s *Scanner) WithRemoteCheck(enabled bool) *Scanner {
 	s.checkRemote = enabled
+	return s
+}
+
+// WithReuseExisting keeps indexed metadata while still discovering new repositories.
+func (s *Scanner) WithReuseExisting(enabled bool) *Scanner {
+	s.reuseExisting = enabled
+	return s
+}
+
+// WSLResult contains results produced by one Linux worker process.
+type WSLResult struct {
+	Repos                                                []*index.Repo
+	Found                                                []string
+	Candidates                                           int
+	Reused, Refreshed, StatusUnavailable, StatusTimeouts int
+	Discovery, Git, Metadata                             time.Duration
+	CompleteRoots                                        []string
+	Warnings                                             []string
+}
+
+// WSLScanFunc scans all roots in one distro and returns native Linux results.
+type WSLScanFunc func(context.Context, []config.Root, []string, []*index.Repo, *metadata.GlobalMeta, bool, bool, bool, func(string, string, int, int, int)) (WSLResult, error)
+
+// WithWSLScan supplies the Windows-to-WSL transport without linking it into the Linux worker.
+func (s *Scanner) WithWSLScan(fn WSLScanFunc) *Scanner {
+	s.wslScan = fn
+	return s
+}
+
+// WithGlobalMeta supplies metadata from the parent CLI process to a WSL worker.
+func (s *Scanner) WithGlobalMeta(meta *metadata.GlobalMeta) *Scanner {
+	s.globalMeta = meta
 	return s
 }
 
@@ -81,24 +139,80 @@ func (s *Scanner) SnapshotMetrics() ScanMetrics {
 	defer s.metrics.mu.Unlock()
 
 	return ScanMetrics{
-		DirsScanned:    s.metrics.DirsScanned,
-		DirsExcluded:   s.metrics.DirsExcluded,
-		DirsSkipped:    s.metrics.DirsSkipped,
-		ReposFound:     s.metrics.ReposFound,
-		RootsTotal:     s.metrics.RootsTotal,
-		RootsCompleted: s.metrics.RootsCompleted,
-		TotalDirs:      s.metrics.TotalDirs,
-		DeepestPath:    s.metrics.DeepestPath,
-		DeepestDepth:   s.metrics.DeepestDepth,
-		LargestDir:     s.metrics.LargestDir,
-		LargestDirSize: s.metrics.LargestDirSize,
-		StartTime:      s.metrics.StartTime,
-		EndTime:        s.metrics.EndTime,
+		DirsScanned:       s.metrics.DirsScanned,
+		DirsExcluded:      s.metrics.DirsExcluded,
+		DirsSkipped:       s.metrics.DirsSkipped,
+		ReposFound:        s.metrics.ReposFound,
+		ReposReused:       s.metrics.ReposReused,
+		ReposRefreshed:    s.metrics.ReposRefreshed,
+		StatusUnavailable: s.metrics.StatusUnavailable,
+		StatusTimeouts:    s.metrics.StatusTimeouts,
+		DiscoveryDuration: s.metrics.DiscoveryDuration,
+		GitDuration:       s.metrics.GitDuration,
+		MetadataDuration:  s.metrics.MetadataDuration,
+		TransportDuration: s.metrics.TransportDuration,
+		CurrentRoot:       s.metrics.CurrentRoot,
+		CurrentRepo:       s.metrics.CurrentRepo,
+		RootsTotal:        s.metrics.RootsTotal,
+		RootsCompleted:    s.metrics.RootsCompleted,
+		TotalDirs:         s.metrics.TotalDirs,
+		DeepestPath:       s.metrics.DeepestPath,
+		DeepestDepth:      s.metrics.DeepestDepth,
+		LargestDir:        s.metrics.LargestDir,
+		LargestDirSize:    s.metrics.LargestDirSize,
+		StartTime:         s.metrics.StartTime,
+		EndTime:           s.metrics.EndTime,
 	}
 }
 
-// Scan scans all configured roots for git repositories
-func (s *Scanner) Scan() error {
+func (s *Scanner) markFound(repoPath string) {
+	s.foundMu.Lock()
+	s.foundPaths[repoPath] = struct{}{}
+	s.foundMu.Unlock()
+}
+
+// FoundPaths returns repository paths discovered by the last scan.
+func (s *Scanner) FoundPaths() map[string]struct{} {
+	s.foundMu.Lock()
+	defer s.foundMu.Unlock()
+	found := make(map[string]struct{}, len(s.foundPaths))
+	for path := range s.foundPaths {
+		found[path] = struct{}{}
+	}
+	return found
+}
+
+// IncompleteError means one or more roots failed; completed roots can still be saved.
+type IncompleteError struct{ Errors []error }
+
+func (e *IncompleteError) Error() string { return errors.Join(e.Errors...).Error() }
+
+// CompletedRoots names roots whose discovery finished without an error.
+func (s *Scanner) CompletedRoots() map[string]struct{} {
+	s.foundMu.Lock()
+	defer s.foundMu.Unlock()
+	copy := make(map[string]struct{}, len(s.completeRoots))
+	for name := range s.completeRoots {
+		copy[name] = struct{}{}
+	}
+	return copy
+}
+
+func (s *Scanner) markRootComplete(name string) {
+	s.foundMu.Lock()
+	s.completeRoots[name] = struct{}{}
+	s.foundMu.Unlock()
+}
+
+// Scan scans all configured roots for git repositories.
+func (s *Scanner) Scan() error { return s.ScanContext(context.Background()) }
+
+// ScanContext cancels discovery and WSL transport when the caller stops a scan.
+func (s *Scanner) ScanContext(ctx context.Context) error {
+	s.foundMu.Lock()
+	s.foundPaths = make(map[string]struct{})
+	s.completeRoots = make(map[string]struct{})
+	s.foundMu.Unlock()
 	s.metrics.StartTime = time.Now()
 	defer func() {
 		s.metrics.EndTime = time.Now()
@@ -106,17 +220,40 @@ func (s *Scanner) Scan() error {
 	s.metrics.mu.Lock()
 	s.metrics.RootsTotal = len(s.cfg.Roots)
 	for i := range s.cfg.Roots {
-		s.cfg.Roots[i].Path = normalizeScanPath(s.cfg.Roots[i].Path)
+		s.cfg.Roots[i].Path = normalizeConfiguredRootPath(s.cfg.Roots[i], runtime.GOOS == "windows")
 	}
 	s.metrics.mu.Unlock()
 
 	// Load global metadata
-	globalMeta, err := metadata.LoadGlobalMeta()
-	if err != nil {
-		logger.Verbose("Failed to load global metadata: %v", err)
-		globalMeta = &metadata.GlobalMeta{}
+	if s.globalMeta == nil {
+		metaStart := time.Now()
+		globalMeta, err := metadata.LoadGlobalMeta()
+		if err != nil {
+			logger.Verbose("Failed to load global metadata: %v", err)
+			globalMeta = &metadata.GlobalMeta{}
+		}
+		s.globalMeta = globalMeta
+		s.metrics.mu.Lock()
+		s.metrics.MetadataDuration += time.Since(metaStart)
+		s.metrics.mu.Unlock()
 	}
-	s.globalMeta = globalMeta
+
+	for i := range s.cfg.Roots {
+		root := &s.cfg.Roots[i]
+		if !root.WSL || runtime.GOOS != "windows" {
+			continue
+		}
+		if root.WSLDistro == "" {
+			distro, err := wsl.GetDefaultDistro()
+			if err != nil {
+				return fmt.Errorf("WSL root %s: %w", root.Name, err)
+			}
+			root.WSLDistro = distro
+		}
+		if s.wslScan == nil {
+			return fmt.Errorf("WSL root %s requires a native WSL worker", root.Name)
+		}
+	}
 
 	logger.Debug("Starting scan with %d workers across %d roots", s.workers, len(s.cfg.Roots))
 
@@ -131,282 +268,233 @@ func (s *Scanner) Scan() error {
 			go func() {
 				defer wg.Done()
 				for repoPath := range repoChan {
+					if ctx.Err() != nil {
+						continue
+					}
+					s.metrics.mu.Lock()
+					s.metrics.CurrentRepo = filepath.Base(repoPath)
+					s.metrics.mu.Unlock()
+					if s.reuseExisting {
+						if existing, ok := s.idx.Get(repoPath); ok {
+							rootName, relPath := s.findRoot(repoPath)
+							if existing.Root == rootName && existing.RelPath == relPath {
+								s.markFound(repoPath)
+								s.metrics.mu.Lock()
+								s.metrics.ReposReused++
+								s.metrics.mu.Unlock()
+								continue
+							}
+						}
+						if s.idx.IsRejectedUnchanged(repoPath) {
+							continue
+						}
+					}
 					logger.Debug("Processing repository: %s", repoPath)
 					if err := s.processRepo(repoPath); err != nil {
+						if errors.Is(err, errNotGitRepo) {
+							s.idx.RememberRejected(repoPath)
+						} else {
+							// An inspection failure must not erase cached metadata.
+							s.markFound(repoPath)
+						}
 						logger.Verbose("Failed to process %s: %v", repoPath, err)
+					} else {
+						s.markFound(repoPath)
+						s.idx.ForgetRejected(repoPath)
 					}
 				}
 			}()
 		}
 	} else {
-		// In dry-run mode, just count repos
+		// Discovery records the count; drain the channel without processing repos.
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for range repoChan {
-				s.metrics.mu.Lock()
-				s.metrics.ReposFound++
-				s.metrics.mu.Unlock()
+			for repoPath := range repoChan {
+				s.foundMu.Lock()
+				s.foundPaths[repoPath] = struct{}{}
+				s.foundMu.Unlock()
 			}
 		}()
 	}
 
-	// Check if fd is available (once, before scanning roots)
-	fdAvailable := isFdAvailable()
-	if !fdAvailable {
-		logger.Verbose("fd not found in PATH. Using built-in scanner (slower). Install fd for 10-30x faster scans: https://github.com/sharkdp/fd")
-	}
-
-	// Walk each root in parallel
+	// Scan native roots independently and WSL roots once per distro.
+	rootErrors := make(chan error, len(s.cfg.Roots))
 	var rootWg sync.WaitGroup
+	wslGroups := make(map[string][]config.Root)
 	for _, root := range s.cfg.Roots {
+		if root.WSL && runtime.GOOS == "windows" {
+			wslGroups[root.WSLDistro] = append(wslGroups[root.WSLDistro], root)
+			continue
+		}
 		rootWg.Add(1)
 		go func(r config.Root) {
 			defer rootWg.Done()
-			defer func() {
-				s.metrics.mu.Lock()
-				s.metrics.RootsCompleted++
-				s.metrics.mu.Unlock()
-			}()
-			logger.Debug("Walking root: %s (path: %s, max_depth: %d)", r.Name, r.Path, r.MaxDepth)
-
-			// Use fd if available, otherwise fall back to parallel walker
-			if fdAvailable {
-				if err := s.walkRootWithFd(r, repoChan); err != nil {
-					logger.Verbose("fd failed for root %s, falling back to built-in scanner: %v", r.Name, err)
-					if err := s.walkRootParallel(r, repoChan); err != nil {
-						logger.Verbose("Failed to walk root %s: %v", r.Name, err)
-					}
-				}
+			defer func() { s.metrics.mu.Lock(); s.metrics.RootsCompleted++; s.metrics.mu.Unlock() }()
+			s.metrics.mu.Lock()
+			s.metrics.CurrentRoot = r.Name
+			s.metrics.mu.Unlock()
+			if err := s.walkRootNative(ctx, r, repoChan); err != nil {
+				rootErrors <- fmt.Errorf("root %s: %w", r.Name, err)
 			} else {
-				if err := s.walkRootParallel(r, repoChan); err != nil {
-					logger.Verbose("Failed to walk root %s: %v", r.Name, err)
-				}
+				s.markRootComplete(r.Name)
 			}
 		}(root)
+	}
+	for distro, roots := range wslGroups {
+		rootWg.Add(1)
+		go func(distro string, roots []config.Root) {
+			defer rootWg.Done()
+			defer func() { s.metrics.mu.Lock(); s.metrics.RootsCompleted += len(roots); s.metrics.mu.Unlock() }()
+			s.metrics.mu.Lock()
+			s.metrics.CurrentRoot = distro
+			s.metrics.CurrentRepo = ""
+			s.metrics.mu.Unlock()
+			transportStart := time.Now()
+			lastFound, lastRefreshed, lastReused := 0, 0, 0
+			onProgress := func(root, repo string, found, refreshed, reused int) {
+				s.metrics.mu.Lock()
+				s.metrics.ReposFound += found - lastFound
+				s.metrics.ReposRefreshed += refreshed - lastRefreshed
+				s.metrics.ReposReused += reused - lastReused
+				if root != "" {
+					s.metrics.CurrentRoot = distro + "/" + root
+				}
+				if repo != "" {
+					s.metrics.CurrentRepo = repo
+				}
+				lastFound, lastRefreshed, lastReused = found, refreshed, reused
+				s.metrics.mu.Unlock()
+			}
+			result, err := s.wslScan(ctx, roots, s.cfg.GlobalExcludes, s.idx.List(), s.globalMeta, !s.reuseExisting, s.checkRemote, s.dryRun, onProgress)
+			s.metrics.mu.Lock()
+			s.metrics.TransportDuration += time.Since(transportStart)
+			s.metrics.mu.Unlock()
+			if err != nil {
+				rootErrors <- fmt.Errorf("WSL distro %s: %w", distro, err)
+				return
+			}
+			s.metrics.mu.Lock()
+			s.metrics.ReposFound += result.Candidates - lastFound
+			s.metrics.ReposReused += result.Reused - lastReused
+			s.metrics.ReposRefreshed += result.Refreshed - lastRefreshed
+			s.metrics.StatusUnavailable += result.StatusUnavailable
+			s.metrics.StatusTimeouts += result.StatusTimeouts
+			s.metrics.DiscoveryDuration += result.Discovery
+			s.metrics.GitDuration += result.Git
+			s.metrics.MetadataDuration += result.Metadata
+			s.metrics.mu.Unlock()
+			for _, warning := range result.Warnings {
+				rootErrors <- fmt.Errorf("WSL distro %s: %s", distro, warning)
+			}
+			for _, name := range result.CompleteRoots {
+				s.markRootComplete(name)
+			}
+			if s.dryRun {
+				return
+			}
+			s.foundMu.Lock()
+			for _, p := range result.Found {
+				s.foundPaths[p] = struct{}{}
+			}
+			s.foundMu.Unlock()
+			for _, repo := range result.Repos {
+				s.idx.Upsert(repo)
+			}
+		}(distro, roots)
 	}
 
 	// Wait for all roots to finish walking, then close channel
 	rootWg.Wait()
+	close(rootErrors)
 	close(repoChan)
 
 	// Wait for all repo processing to finish
 	wg.Wait()
-
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var failed []error
+	for err := range rootErrors {
+		failed = append(failed, err)
+	}
+	if len(failed) > 0 {
+		return &IncompleteError{Errors: failed}
+	}
 	return nil
 }
 
-// isFdAvailable checks if fd command is available in PATH
-func isFdAvailable() bool {
-	_, err := exec.LookPath("fd")
-	return err == nil
+// normalizeConfiguredRootPath preserves Linux syntax for WSL roots in Windows configs.
+func normalizeConfiguredRootPath(root config.Root, windows bool) string {
+	if windows && root.WSL {
+		return path.Clean(root.Path)
+	}
+	return normalizeScanPath(root.Path)
 }
 
-// walkRootWithFd uses fd command to quickly find .git directories
-func (s *Scanner) walkRootWithFd(root config.Root, repoChan chan<- string) error {
-	// Build fd command
-	args := []string{
-		"-t", "d", // type: directory
-		"-H", // include hidden
-		"--max-depth", fmt.Sprintf("%d", root.MaxDepth),
-		"-a", ".git", // search for .git
-		root.Path,
+func rootScanPath(root config.Root) string {
+	if root.WSL && runtime.GOOS == "windows" {
+		return wsl.TranslatePathToWindows(root.WSLDistro, root.Path)
 	}
-
-	// Add excludes
-	excludes := make([]string, 0, len(s.cfg.GlobalExcludes)+len(root.Exclude))
-	excludes = append(excludes, s.cfg.GlobalExcludes...)
-	excludes = append(excludes, root.Exclude...)
-
-	for _, exclude := range excludes {
-		if exclude == ".git" {
-			continue
-		}
-		args = append(args, "-E", exclude)
-	}
-
-	logger.Debug("Running: fd %s", strings.Join(args, " "))
-
-	cmd := exec.Command("fd", args...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("fd command failed: %w", err)
-	}
-
-	// Parse output (one .git path per line)
-	scanner := bufio.NewScanner(&stdout)
-	for scanner.Scan() {
-		gitPath := strings.TrimSpace(scanner.Text())
-		if gitPath == "" {
-			continue
-		}
-		gitPath = strings.TrimRight(gitPath, `\/`)
-
-		// Remove /.git suffix to get repo path
-		repoPath := normalizeScanPath(filepath.Dir(gitPath))
-
-		s.metrics.mu.Lock()
-		s.metrics.ReposFound++
-		s.metrics.mu.Unlock()
-
-		logger.Debug("Found git repository: %s", repoPath)
-		repoChan <- repoPath
-	}
-
-	return scanner.Err()
+	return root.Path
 }
 
-// walkRootParallel walks a single root directory with parallel subdirectory exploration
-func (s *Scanner) walkRootParallel(root config.Root, repoChan chan<- string) error {
-	// Merge global excludes with root-specific excludes
-	excludes := make([]string, 0, len(s.cfg.GlobalExcludes)+len(root.Exclude))
-	excludes = append(excludes, s.cfg.GlobalExcludes...)
-	excludes = append(excludes, root.Exclude...)
-
-	// Semaphore to limit concurrent directory reads
-	sem := make(chan struct{}, runtime.NumCPU()*4)
-	var walkWg sync.WaitGroup
-
-	// Recursive parallel walker
-	var walkDir func(path string, depth int)
-	walkDir = func(path string, depth int) {
-		defer walkWg.Done()
-		path = normalizeScanPath(path)
-
-		// Track metrics
-		s.metrics.mu.Lock()
-		s.metrics.DirsScanned++
-		s.metrics.TotalDirs++
-		if depth > s.metrics.DeepestDepth {
-			s.metrics.DeepestDepth = depth
-			s.metrics.DeepestPath = path
-		}
-		s.metrics.mu.Unlock()
-
-		// Check max depth
-		if depth > root.MaxDepth {
-			s.metrics.mu.Lock()
-			s.metrics.DirsSkipped++
-			s.metrics.mu.Unlock()
-			logger.Debug("Skipping directory (max depth %d reached): %s", root.MaxDepth, path)
-			return
-		}
-
-		// Check if this is a git repo
-		gitPath := filepath.Join(path, ".git")
-		if _, err := os.Stat(gitPath); err == nil {
-			logger.Debug("Found git repository: %s", path)
-			repoChan <- path
+// walkRootNative uses the same discovery engine on local Windows and Linux roots.
+func (s *Scanner) walkRootNative(ctx context.Context, root config.Root, repoChan chan<- string) error {
+	started := time.Now()
+	defer func() { s.metrics.mu.Lock(); s.metrics.DiscoveryDuration += time.Since(started); s.metrics.mu.Unlock() }()
+	excludes := append(append([]string{}, s.cfg.GlobalExcludes...), root.Exclude...)
+	return discovery.Walk(ctx, root.Path, root.MaxDepth,
+		func(name, fullPath string) bool { return s.isExcluded(name, fullPath, root.Path, excludes) },
+		func(repoPath string) error {
+			repoPath = normalizeScanPath(repoPath)
 			s.metrics.mu.Lock()
 			s.metrics.ReposFound++
 			s.metrics.mu.Unlock()
-			// Don't descend into git repos
-			return
-		}
-
-		// Read directory entries
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			// Permission denied or other error - skip this directory
-			return
-		}
-
-		// Track largest directory
-		subdirCount := 0
-		for _, entry := range entries {
-			if entry.IsDir() {
-				subdirCount++
+			select {
+			case repoChan <- repoPath:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-		}
-		if subdirCount > 0 {
-			s.metrics.mu.Lock()
-			if subdirCount > s.metrics.LargestDirSize {
-				s.metrics.LargestDirSize = subdirCount
-				s.metrics.LargestDir = path
-			}
-			s.metrics.mu.Unlock()
-		}
-
-		// Process subdirectories in parallel
-		for _, entry := range entries {
-			if !entry.IsDir() {
-				continue
-			}
-
-			dirName := entry.Name()
-			fullPath := normalizeScanPath(filepath.Join(path, dirName))
-
-			// Check if excluded
-			if s.isExcluded(dirName, fullPath, root.Path, excludes) {
-				logger.Debug("Skipping excluded directory: %s", fullPath)
-				s.metrics.mu.Lock()
-				s.metrics.DirsExcluded++
-				s.metrics.TotalDirs++ // Count it but don't scan it
-				s.metrics.mu.Unlock()
-				continue
-			}
-
-			// Acquire semaphore and spawn goroutine for subdirectory
-			sem <- struct{}{}
-			walkWg.Add(1)
-			go func(subPath string, d int) {
-				defer func() { <-sem }()
-				walkDir(subPath, d)
-			}(fullPath, depth+1)
-		}
-	}
-
-	// Start walking from root
-	walkWg.Add(1)
-	go walkDir(root.Path, 0)
-
-	// Wait for all walking to complete
-	walkWg.Wait()
-
-	return nil
+		})
 }
 
 // processRepo processes a single repository
 func (s *Scanner) processRepo(repoPath string) error {
 	repoPath = normalizeScanPath(repoPath)
-
-	// No need to re-verify via subprocess: the walk already confirmed .git exists.
-
-	// Determine root and relative path
-	root, relPath := s.findRoot(repoPath)
-	if root == "" {
+	rootName, relPath := s.findRoot(repoPath)
+	if rootName == "" {
 		return fmt.Errorf("could not determine root for %s", repoPath)
 	}
 
-	// Create repo entry
-	repo := &index.Repo{
-		Name:    filepath.Base(repoPath),
-		Root:    root,
-		RelPath: relPath,
-		AbsPath: repoPath,
+	gitStart := time.Now()
+	info, err := git.GetRepoInfo(repoPath)
+	if err != nil {
+		return errNotGitRepo
 	}
-
-	// Get git information (combined call for better performance)
-	if info, err := git.GetRepoInfo(repoPath); err == nil {
-		repo.CurrentBranch = info.Branch
-		if info.Commit != nil {
-			repo.LastCommitTime = info.Commit.Timestamp
-			repo.LastCommitAuthor = info.Commit.Author
-			repo.LastCommitHash = info.Commit.Hash
-		}
-		repo.RemoteURL = info.RemoteURL
-		repo.Host = info.Host
+	repo := &index.Repo{Name: filepath.Base(repoPath), Root: rootName, RelPath: relPath, AbsPath: repoPath}
+	repo.CurrentBranch = info.Branch
+	if info.Commit != nil {
+		repo.LastCommitTime = info.Commit.Timestamp
+		repo.LastCommitAuthor = info.Commit.Author
+		repo.LastCommitHash = info.Commit.Hash
 	}
-
-	// Get status separately (required for porcelain parsing)
+	repo.RemoteURL = info.RemoteURL
+	repo.Host = info.Host
 	if status, err := git.GetStatus(repoPath); err == nil {
 		repo.IsDirty = status.IsDirty
 		repo.HasUntracked = status.HasUntracked
+	} else {
+		logger.Verbose("Git status unavailable for %s: %v", repoPath, err)
+		repo.StatusUnavailable = true
+		s.metrics.mu.Lock()
+		s.metrics.StatusUnavailable++
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.metrics.StatusTimeouts++
+		}
+		s.metrics.mu.Unlock()
 	}
-
-	// Check remote status if requested
 	if s.checkRemote {
 		if remoteStatus, err := git.GetRemoteStatus(repoPath); err == nil {
 			repo.Ahead = remoteStatus.Ahead
@@ -414,6 +502,10 @@ func (s *Scanner) processRepo(repoPath string) error {
 		}
 	}
 
+	s.metrics.mu.Lock()
+	s.metrics.GitDuration += time.Since(gitStart)
+	s.metrics.mu.Unlock()
+	metaStart := time.Now()
 	// Detect language
 	repo.PrimaryLanguage = DetectLanguage(repoPath)
 
@@ -422,7 +514,7 @@ func (s *Scanner) processRepo(repoPath string) error {
 
 	// Read metadata
 	repoMeta, _ := metadata.ReadRepoMeta(repoPath)
-	globalMeta := metadata.FindGlobalMeta(s.globalMeta, root, relPath)
+	globalMeta := metadata.FindGlobalMeta(s.globalMeta, rootName, relPath)
 
 	// Get existing repo data to preserve certain fields
 	var existingMeta *metadata.RepoMeta
@@ -466,6 +558,10 @@ func (s *Scanner) processRepo(repoPath string) error {
 
 	// Upsert into index
 	s.idx.Upsert(repo)
+	s.metrics.mu.Lock()
+	s.metrics.ReposRefreshed++
+	s.metrics.MetadataDuration += time.Since(metaStart)
+	s.metrics.mu.Unlock()
 
 	return nil
 }
@@ -480,8 +576,9 @@ func (s *Scanner) findRoot(repoPath string) (string, string) {
 	}
 
 	for _, root := range s.cfg.Roots {
-		if rel, ok := pathWithinRoot(root.Path, repoPath); ok {
-			rootPathLen := len(normalizeScanPath(root.Path))
+		scanPath := rootScanPath(root)
+		if rel, ok := pathWithinRoot(scanPath, repoPath); ok {
+			rootPathLen := len(normalizeScanPath(scanPath))
 			if rootPathLen > bestMatch.pathLen {
 				bestMatch.name = root.Name
 				bestMatch.relPath = rel

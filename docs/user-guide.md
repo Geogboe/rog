@@ -66,8 +66,11 @@ This creates a basic config that you should customize with your actual project d
 Scan configured roots for Git repositories and update the index.
 
 ```bash
-# Basic scan (local only, fast)
+# Fast scan (local only): discover new repos and reuse indexed metadata
 rog scan
+
+# Refresh Git branch, commit, status, and repository metadata
+rog scan --full
 
 # Include remote status (slower, requires network)
 rog scan --remote
@@ -80,16 +83,22 @@ rog scan --llm --refresh-meta
 
 # Force plain progress output
 rog scan --progress plain
+
+# Separate discovery, Git, metadata, WSL transport, and index timings
+rog scan --timings
 ```
 
 **What it does:**
 - Discovers all Git repositories in configured roots
-- Extracts Git metadata (branch, commits, status)
-- Detects primary programming language
-- Reads `.rogmeta.yml` files for manual metadata
+- Reuses indexed Git and repository metadata for known repositories; values such as dirty/clean state may be stale until a full scan
+- Extracts Git metadata, language, and `.rogmeta.yml` metadata for new repositories
+- Rechecks previously rejected `.git` markers when they change or after 24 hours; `--full` retries them immediately
+- With `--full`, refreshes those fields for every repository; each working-tree status check has a 3-second limit, and a timed-out check is shown as `status unknown` and excluded from `--clean` and `--dirty` results
 - Optionally calls LLM to enrich missing metadata
 
-**Performance:** Typically < 2s for hundreds of repos (local-only)
+On Windows, rog launches one bundled Linux scanner process per configured WSL distro. Discovery and Git inspection run inside Linux; indexed paths remain `\\wsl$\...`. The first install prompts for the distro, exact cache path, and intended changes. Declining or running without a terminal skips that WSL root and preserves its indexed entries. Use `--approve-wsl-worker-install` for explicit unattended approval. `--dry-run` never installs a worker. The cache is `${XDG_CACHE_HOME:-$HOME/.cache}/rog/workers/<build-id>/` inside the distro. A matching cached worker launches without prompting. No `fd` or `fdfind` binary is needed.
+
+**Performance:** Scan time depends on the number and location of configured roots. `--full` also checks every repository's Git state and can be substantially slower. Progress reports discovered Git markers, refreshed/reused repositories, the active name, and elapsed time. The final summary reports the actual number of indexed repositories. A scan with skipped or failed roots exits with code 2, retains their index entries, and prints a reason. Cancelled scans leave the previous index intact.
 
 ### `rog list`
 
@@ -148,7 +157,7 @@ rog list --format yaml
 
 ### `rog select` / `rog sel`
 
-Interactively select a repository using fzf (if available).
+Interactively select a repository with rog's built-in picker. It shows name, root/path, language, status, and details. Type to filter; use arrows or Page Up/Down to move, Enter to select, and Escape or Ctrl+C to cancel. The picker writes only the chosen path to stdout and draws on the terminal, so command substitution works. If multiple results require a picker but no terminal is available, rog prints an actionable error.
 
 ```bash
 # Select from all repos
@@ -162,7 +171,7 @@ cd "$(rog select)"
 code "$(rog select api)"
 ```
 
-**Requirements:** `fzf` for interactive selection (falls back to plain list if not installed)
+**Requirements:** An interactive terminal for multiple matches. Neither `fzf` nor `fd` is required.
 
 ### `rog info`
 
@@ -290,7 +299,7 @@ Controls scan progress rendering.
 - `auto`: use richer interactive progress when supported, otherwise fall back to plain output
 - `off`: disable progress updates
 - `plain`: static ASCII line-based progress
-- `rich`: interactive progress with optional ANSI color
+- `rich`: interactive progress with optional ANSI color; briefly shows a recently processed repository name during scans
 
 #### `llm` (optional)
 
@@ -488,13 +497,12 @@ rog scan --llm
 
 ## Performance
 
-| Operation | Target | Typical |
-|-----------|--------|---------|
-| `rog list` | < 100ms | ~20ms |
-| `rog info` | < 100ms | ~10ms |
-| `rog scan` (100 repos) | < 2s | ~1.5s |
-| `rog scan --remote` | < 10s | ~5s |
-| `rog scan --llm` (100 repos) | < 30s | ~20s |
+| Operation | Goal |
+|-----------|------|
+| `rog list`, `rog info` | < 100ms |
+| `rog scan` (100 repos) | < 2s |
+
+Scan time depends on filesystem speed and repository size. Large trees on mounted Windows filesystems can take much longer; the scan goal above is not a measured guarantee.
 
 **Tips for speed:**
 - Run `rog scan` periodically (not every time)

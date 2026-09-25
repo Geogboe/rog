@@ -30,8 +30,11 @@ rog init
 # Edit config to add your project directories
 vi ~/.config/rog/config.yml
 
-# Scan repositories
+# Scan repositories, reusing metadata for indexed repos
 rog scan
+
+# Refresh Git state and metadata for all repos
+rog scan --full
 
 # Rich progress for interactive scans
 rog scan --progress rich
@@ -124,7 +127,7 @@ rog version
 ### Interactive Selection
 
 ```bash
-# Select with fzf (if installed)
+# Select with the built-in picker
 rog select
 
 # Use in scripts
@@ -351,21 +354,22 @@ rog list --behind
 
 ## Performance
 
-| Operation | Target | Typical |
-|-----------|--------|---------|
-| `rog list` | < 100ms | ~20ms |
-| `rog info` | < 100ms | ~10ms |
-| `rog scan` (with fd*) | < 5s/500 repos | ~2-3s |
-| `rog scan` (no fd) | < 10s/500 repos | ~8s |
-| `rog scan --remote` | < 30s/500 repos | ~15s |
+| Operation | Goal |
+|-----------|------|
+| `rog list` | < 100ms |
+| `rog info` | < 100ms |
+| Warm `rog scan` | < 2s for hundreds of repositories (project target) |
+| `rog scan --full` | Report actual Git refresh time and timeout count |
 
-\* Install `fd` for 10-30x faster scanning: `brew install fd` or `cargo install fd-find`
+The built-in Go scanner discovers hidden and nested repositories without `fd` or `fdfind`. Warm scans reuse indexed metadata; `--full` refreshes Git state. On Windows, configured WSL roots run in a bundled Linux worker inside the distro after a one-time consented cache install. Use `rog scan --timings` to see stage timings. Scan speed depends on the filesystem and Git status cost.
 
 ## Documentation
 
 - [User Guide](docs/user-guide.md) - Comprehensive usage guide
 - [Architecture](docs/architecture.md) - Technical implementation details
 - [WSL Support](docs/wsl-support.md) - Windows Subsystem for Linux integration
+- [Native scanning decisions](docs/native-scanning.md) - worker cache and picker dependency review
+- [Native scan QA](docs/native-scan-qa.md) - measured before/after results
 
 ## Philosophy
 
@@ -391,7 +395,8 @@ Inspired by tools like `fd`, `rg`, `fzf`, and various project management CLIs. B
 
 - [cobra](https://github.com/spf13/cobra) - CLI framework
 - [yaml.v3](https://gopkg.in/yaml.v3) - YAML parsing
-- Go standard library - Everything else
+- [Bubble Tea](https://github.com/charmbracelet/bubbletea) - Built-in repository picker
+- Go standard library - Native discovery and worker transport
 
 ---
 

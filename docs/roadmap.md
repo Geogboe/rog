@@ -4,6 +4,8 @@
 
 This document outlines the development roadmap for `rog`. The project follows an iterative approach with clearly defined milestones. Each version maintains the core philosophy: fast, local-first, predictable.
 
+Active deferred work is tracked in [GitHub issues](https://github.com/Geogboe/rog/issues); this page is a historical overview.
+
 ---
 
 ## Version Strategy
@@ -57,7 +59,7 @@ This document outlines the development roadmap for `rog`. The project follows an
 -  `rog init` - Initialize configuration
 -  `rog scan` - Scan for repositories
 -  `rog list` - List repositories
--  `rog select` - Interactive selection (with `fzf`)
+-  `rog select` - Interactive selection (built-in picker)
 -  `rog info` - Show repository details
 -  `rog path` - Print repository path
 -  `rog open` - Open in editor

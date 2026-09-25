@@ -79,7 +79,7 @@
    - Multiple filter options
    - JSON/YAML output
    - Sorting and limiting
-4. **rog select** - Interactive selection (fzf)
+4. **rog select** - Interactive selection (built-in picker)
 5. **rog info** - Detailed repository information
 6. **rog path** - Output absolute path (for scripting)
 7. **rog open** - Open in editor
@@ -137,7 +137,7 @@ All tests passing with `go test ./...`
 - ✅ Tag and description generation
 
 ### UX
-- ✅ Interactive selection with fzf
+- ✅ Interactive selection with a built-in picker
 - ✅ Clean tabular output
 - ✅ Shell-friendly `path` command
 - ✅ Editor integration
@@ -162,14 +162,15 @@ All tests passing with `go test ./...`
 - **cobra**: CLI framework (well-established, 33k+ stars)
 - **yaml.v3**: YAML parsing (standard library quality)
 - **testify**: Test assertions (industry standard)
-- **Go stdlib**: Everything else (minimal external deps)
+- **Bubble Tea**: Built-in picker terminal lifecycle and input
+- **Go stdlib**: Native discovery, WSL worker protocol, and Git coordination
 
 ### Design Decisions
 
 1. **JSON Index**: Simple, debuggable, fast for < 10k repos
 2. **Shell-out Git**: More reliable than go-git, uses user's config
 3. **In-Memory Index**: Fast queries, acceptable memory usage
-4. **fzf Integration**: Don't reinvent superior UX
+4. **Picker UI boundary**: Keep terminal rendering separate from query logic
 5. **Manual > AI**: User metadata always takes precedence
 
 ## Documentation

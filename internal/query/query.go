@@ -109,6 +109,9 @@ func matchesFilter(repo *index.Repo, filter *Filter) bool {
 
 	// Dirty filter
 	if filter.Dirty != nil {
+		if repo.StatusUnavailable {
+			return false
+		}
 		if *filter.Dirty && !repo.IsDirty && !repo.HasUntracked {
 			return false
 		}

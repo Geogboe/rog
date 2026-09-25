@@ -2,13 +2,19 @@ package git
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
+
+var ErrIncompleteGitDir = errors.New("incomplete .git directory")
 
 // CommitInfo represents information about a commit
 type CommitInfo struct {
@@ -43,7 +49,9 @@ func GetRepoInfo(repoPath string) (*RepoInfo, error) {
 	info := &RepoInfo{}
 
 	// Fast path: read everything directly from the .git directory
-	if gitDir, err := resolveGitDir(repoPath); err == nil {
+	if gitDir, err := resolveGitDir(repoPath); errors.Is(err, ErrIncompleteGitDir) {
+		return nil, err
+	} else if err == nil {
 		if branch, err := readBranchFromGitDir(gitDir); err == nil {
 			info.Branch = branch
 		}
@@ -95,6 +103,12 @@ func resolveGitDir(repoPath string) (string, error) {
 		return "", fmt.Errorf("no .git found: %w", err)
 	}
 	if info.IsDir() {
+		for _, required := range []string{"objects", "refs"} {
+			child, err := os.Stat(filepath.Join(gitPath, required))
+			if err != nil || !child.IsDir() {
+				return "", fmt.Errorf("%w: missing %s", ErrIncompleteGitDir, required)
+			}
+		}
 		return gitPath, nil
 	}
 	// .git is a file (worktree or submodule checkout)
@@ -259,7 +273,7 @@ func parseReflogLine(line string) (*CommitInfo, error) {
 
 // GetBranch returns the current branch name
 func GetBranch(repoPath string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd := exec.Command(gitExecutable(), "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -274,7 +288,7 @@ func GetBranch(repoPath string) (string, error) {
 // GetLastCommit returns information about the last commit
 func GetLastCommit(repoPath string) (*CommitInfo, error) {
 	// Format: hash|author|timestamp
-	cmd := exec.Command("git", "log", "-1", "--format=%H|%an|%ct")
+	cmd := exec.Command(gitExecutable(), "log", "-1", "--format=%H|%an|%ct")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -307,11 +321,23 @@ func GetLastCommit(repoPath string) (*CommitInfo, error) {
 
 // GetStatus returns the working tree status
 func GetStatus(repoPath string) (*Status, error) {
-	cmd := exec.Command("git", "status", "--porcelain")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, gitExecutable(), "--no-optional-locks", "status", "--porcelain")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("git status timed out: %w", ctx.Err())
+		}
+		diagnostic := ""
+		if exit, ok := err.(*exec.ExitError); ok {
+			diagnostic = strings.TrimSpace(string(exit.Stderr))
+		}
+		if diagnostic != "" {
+			return nil, fmt.Errorf("failed to get status: %w: %s", err, diagnostic)
+		}
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 
@@ -337,7 +363,7 @@ func GetStatus(repoPath string) (*Status, error) {
 
 // GetRemoteURL returns the remote URL for the origin remote
 func GetRemoteURL(repoPath string) (string, error) {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := exec.Command(gitExecutable(), "remote", "get-url", "origin")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -353,14 +379,14 @@ func GetRemoteURL(repoPath string) (string, error) {
 // GetRemoteStatus returns ahead/behind counts compared to upstream
 func GetRemoteStatus(repoPath string) (*RemoteStatus, error) {
 	// First, fetch to get latest remote state
-	fetchCmd := exec.Command("git", "fetch", "--quiet")
+	fetchCmd := exec.Command(gitExecutable(), "fetch", "--quiet")
 	fetchCmd.Dir = repoPath
 	if err := fetchCmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}
 
 	// Get ahead/behind counts
-	cmd := exec.Command("git", "rev-list", "--left-right", "--count", "HEAD...@{u}")
+	cmd := exec.Command(gitExecutable(), "rev-list", "--left-right", "--count", "HEAD...@{u}")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -421,7 +447,7 @@ func ExtractHost(url string) string {
 
 // IsGitRepo checks if a directory is a git repository
 func IsGitRepo(path string) bool {
-	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd := exec.Command(gitExecutable(), "rev-parse", "--git-dir")
 	cmd.Dir = path
 
 	var stderr bytes.Buffer
@@ -432,4 +458,40 @@ func IsGitRepo(path string) bool {
 	}
 
 	return true
+}
+
+var gitPathOnce sync.Once
+var gitPath string
+
+// gitExecutable tolerates Windows shells with a reduced PATH or no PATHEXT.
+func gitExecutable() string {
+	gitPathOnce.Do(func() {
+		gitPath = "git"
+		if runtime.GOOS != "windows" {
+			return
+		}
+		if found, err := exec.LookPath("git.exe"); err == nil {
+			gitPath = found
+			return
+		}
+		for _, base := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)")} {
+			if base == "" {
+				continue
+			}
+			candidate := filepath.Join(base, "Git", "cmd", "git.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				gitPath = candidate
+				return
+			}
+		}
+		if profile := os.Getenv("USERPROFILE"); profile != "" {
+			candidate := filepath.Join(profile, "scoop", "shims", "git.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				gitPath = candidate
+				return
+			}
+		}
+		gitPath = "git.exe"
+	})
+	return gitPath
 }

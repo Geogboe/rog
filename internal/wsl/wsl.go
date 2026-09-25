@@ -1,10 +1,14 @@
 package wsl
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 // IsAvailable checks if WSL is available (Windows only)
@@ -13,33 +17,22 @@ func IsAvailable() bool {
 		return false
 	}
 
-	cmd := exec.Command("wsl", "--list", "--quiet")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, executable(), "--list", "--quiet")
 	return cmd.Run() == nil
 }
 
 // DistroExists checks if a specific WSL distro exists
 func DistroExists(distro string) bool {
-	if !IsAvailable() {
+	if !IsAvailable() || distro == "" {
 		return false
 	}
 
-	cmd := exec.Command("wsl", "--list", "--quiet")
-	output, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
-	distros := strings.Split(string(output), "\n")
-	for _, d := range distros {
-		d = strings.TrimSpace(d)
-		// Remove null bytes and BOM that Windows might add
-		d = strings.Trim(d, "\x00\ufeff")
-		if strings.EqualFold(d, distro) {
-			return true
-		}
-	}
-
-	return false
+	// wsl --list --quiet uses UTF-16 output on Windows; ask the distro directly.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return ExecInDistroContext(ctx, distro, "true").Run() == nil
 }
 
 // GetDefaultDistro returns the default WSL distro
@@ -48,47 +41,39 @@ func GetDefaultDistro() (string, error) {
 		return "", fmt.Errorf("WSL not available")
 	}
 
-	cmd := exec.Command("wsl", "--list", "--quiet")
-	output, err := cmd.Output()
+	// Query inside the default distro to avoid decoding wsl --list's UTF-16 output.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, executable(), "--exec", "printenv", "WSL_DISTRO_NAME").Output()
 	if err != nil {
-		return "", fmt.Errorf("failed to get WSL distros: %w", err)
+		return "", fmt.Errorf("failed to get default WSL distro: %w", err)
 	}
-
-	distros := strings.Split(string(output), "\n")
-	if len(distros) == 0 {
-		return "", fmt.Errorf("no WSL distros found")
+	distro := strings.TrimSpace(string(output))
+	if distro == "" {
+		return "", fmt.Errorf("default WSL distro name is empty")
 	}
-
-	// First distro is typically the default
-	distro := strings.TrimSpace(distros[0])
-	distro = strings.Trim(distro, "\x00\ufeff")
-
-	if distro == "" && len(distros) > 1 {
-		distro = strings.TrimSpace(distros[1])
-		distro = strings.Trim(distro, "\x00\ufeff")
-	}
-
 	return distro, nil
 }
 
 // ExecInDistro executes a command in a specific WSL distro
 func ExecInDistro(distro string, command string, args ...string) *exec.Cmd {
-	// Build WSL command: wsl -d <distro> -- <command> <args...>
-	wslArgs := []string{"-d", distro, "--", command}
-	wslArgs = append(wslArgs, args...)
-
-	return exec.Command("wsl", wslArgs...)
+	return ExecInDistroContext(context.Background(), distro, command, args...)
 }
 
-// TranslatePathToWindows converts a WSL path to Windows UNC path
-// Example: /home/user/project -> \\wsl.localhost\Ubuntu\home\user\project
-func TranslatePathToWindows(distro, wslPath string) string {
-	// Remove leading slash
-	wslPath = strings.TrimPrefix(wslPath, "/")
+// ExecInDistroContext executes a command in a specific WSL distro with cancellation.
+func ExecInDistroContext(ctx context.Context, distro string, command string, args ...string) *exec.Cmd {
+	// --exec passes arguments directly without a second shell expansion.
+	wslArgs := []string{"-d", distro, "--exec", command}
+	wslArgs = append(wslArgs, args...)
 
-	// Use \\wsl.localhost\ or \\wsl$\ depending on Windows version
-	// \\wsl.localhost\ is newer and more reliable
-	return fmt.Sprintf("\\\\wsl.localhost\\%s\\%s", distro, wslPath)
+	return exec.CommandContext(ctx, executable(), wslArgs...)
+}
+
+// TranslatePathToWindows converts a WSL path to the Windows UNC share.
+// Example: /home/user/project -> \\wsl$\Ubuntu\home\user\project
+func TranslatePathToWindows(distro, wslPath string) string {
+	wslPath = strings.TrimPrefix(wslPath, "/")
+	return fmt.Sprintf(`\\wsl$\%s\%s`, distro, strings.ReplaceAll(wslPath, "/", `\`))
 }
 
 // ValidateRoot validates a WSL root configuration
@@ -106,10 +91,26 @@ func ValidateRoot(distro, path string) error {
 	}
 
 	// Test if path exists in WSL
-	cmd := ExecInDistro(distro, "test", "-d", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := ExecInDistroContext(ctx, distro, "test", "-d", path)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("path '%s' does not exist in WSL distro '%s'", path, distro)
 	}
 
 	return nil
+}
+
+// executable resolves the inbox WSL launcher even when an embedded shell has
+// a reduced PATH. SystemRoot is supplied by Windows itself.
+func executable() string {
+	if runtime.GOOS == "windows" {
+		if root := os.Getenv("SystemRoot"); root != "" {
+			candidate := filepath.Join(root, "System32", "wsl.exe")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return "wsl.exe"
 }

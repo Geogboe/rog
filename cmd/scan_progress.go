@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
 	"os"
 	"runtime"
 	"strings"
@@ -26,12 +28,20 @@ const (
 )
 
 type scanProgressSnapshot struct {
-	Phase          scanPhase
-	RootsTotal     int
-	RootsCompleted int
-	ReposFound     int
-	StaleRemoved   int
-	Duration       time.Duration
+	Phase             scanPhase
+	RootsTotal        int
+	RootsCompleted    int
+	RootsSucceeded    int
+	ReposFound        int
+	Indexed           int
+	ReposReused       int
+	ReposRefreshed    int
+	StatusUnavailable int
+	CurrentRoot       string
+	CurrentRepo       string
+	StaleRemoved      int
+	Incomplete        bool
+	Duration          time.Duration
 }
 
 type progressRenderer interface {
@@ -51,7 +61,11 @@ func (offProgressRenderer) Update(scanProgressSnapshot) string {
 	return ""
 }
 func (offProgressRenderer) Finish(snapshot scanProgressSnapshot) string {
-	return fmt.Sprintf("Scan completed in %s (%d roots, %d repositories", formatProgressDuration(snapshot.Duration), snapshot.RootsTotal, snapshot.ReposFound) +
+	status := "Scan completed"
+	if snapshot.Incomplete {
+		status = "Scan incomplete"
+	}
+	return fmt.Sprintf("%s in %s (%d/%d roots complete, %d indexed repositories, %d Git markers", status, formatProgressDuration(snapshot.Duration), snapshot.RootsSucceeded, snapshot.RootsTotal, snapshot.Indexed, snapshot.ReposFound) +
 		fmt.Sprintf(", %d stale removed)\n", snapshot.StaleRemoved)
 }
 
@@ -69,9 +83,9 @@ func (plainProgressRenderer) Start(snapshot scanProgressSnapshot) string {
 func (plainProgressRenderer) Update(snapshot scanProgressSnapshot) string {
 	switch snapshot.Phase {
 	case scanPhaseEnrich:
-		return fmt.Sprintf("LLM progress: %d repositories in %s\n", snapshot.ReposFound, formatProgressDuration(snapshot.Duration))
+		return fmt.Sprintf("LLM progress: %d Git markers in %s\n", snapshot.ReposFound, formatProgressDuration(snapshot.Duration))
 	default:
-		return fmt.Sprintf("Scan progress: %d/%d roots, %d repositories, %s elapsed\n",
+		return fmt.Sprintf("Scan progress: %d/%d roots, %d Git markers, %s elapsed\n",
 			snapshot.RootsCompleted,
 			snapshot.RootsTotal,
 			snapshot.ReposFound,
@@ -80,9 +94,16 @@ func (plainProgressRenderer) Update(snapshot scanProgressSnapshot) string {
 	}
 }
 func (plainProgressRenderer) Finish(snapshot scanProgressSnapshot) string {
-	return fmt.Sprintf("Scan completed in %s\nRoots scanned: %d\nRepositories found: %d\nStale removed: %d\n",
+	status := "Scan completed"
+	if snapshot.Incomplete {
+		status = "Scan incomplete"
+	}
+	return fmt.Sprintf("%s in %s\nRoots completed: %d/%d\nIndexed repositories: %d\nGit markers found: %d\nStale removed: %d\n",
+		status,
 		formatProgressDuration(snapshot.Duration),
+		snapshot.RootsSucceeded,
 		snapshot.RootsTotal,
+		snapshot.Indexed,
 		snapshot.ReposFound,
 		snapshot.StaleRemoved,
 	)
@@ -103,23 +124,69 @@ func (r richProgressRenderer) Update(snapshot scanProgressSnapshot) string {
 }
 
 func (r richProgressRenderer) Finish(snapshot scanProgressSnapshot) string {
-	return "\r" + clearLine() + fmt.Sprintf("%s Scan completed in %s\nRoots scanned: %d\nRepositories found: %d\nStale removed: %d\n",
-		r.label("done"),
+	status := "Scan completed"
+	if snapshot.Incomplete {
+		status = "Scan incomplete"
+	}
+	return "\r" + clearLine() + fmt.Sprintf("%s %s in %s (%d/%d roots complete, %d indexed repositories, %d Git markers, %d stale removed)\r\n",
+		r.label("done"), status,
 		formatProgressDuration(snapshot.Duration),
+		snapshot.RootsSucceeded,
 		snapshot.RootsTotal,
+		snapshot.Indexed,
 		snapshot.ReposFound,
 		snapshot.StaleRemoved,
 	)
 }
 
 func (r richProgressRenderer) renderLine(label string, snapshot scanProgressSnapshot) string {
-	return fmt.Sprintf("\r%s %d/%d roots  %d repos  %s",
-		clearLine()+r.label(label),
-		snapshot.RootsCompleted,
-		snapshot.RootsTotal,
-		snapshot.ReposFound,
-		formatProgressDuration(snapshot.Duration),
-	)
+	width, _, err := term.GetSize(os.Stdout.Fd())
+	if err != nil || width < 20 {
+		width = 120
+	}
+	return r.renderLineWidth(label, snapshot, width)
+}
+
+func (r richProgressRenderer) renderLineWidth(label string, snapshot scanProgressSnapshot, width int) string {
+	name := snapshot.CurrentRoot
+	if snapshot.CurrentRepo != "" {
+		if name != "" {
+			name += "/"
+		}
+		name += snapshot.CurrentRepo
+	}
+	var body string
+	if width < 72 {
+		body = fmt.Sprintf("%s %d/%d  %d markers  %s", r.label(label), snapshot.RootsCompleted, snapshot.RootsTotal, snapshot.ReposFound, formatProgressDuration(snapshot.Duration))
+	} else {
+		body = fmt.Sprintf("%s %d/%d roots  %d markers  %d refreshed  %d reused  %s", r.label(label), snapshot.RootsCompleted, snapshot.RootsTotal, snapshot.ReposFound, snapshot.ReposRefreshed, snapshot.ReposReused, formatProgressDuration(snapshot.Duration))
+	}
+	body += formatCurrentRepo(name)
+	if width > 1 {
+		body = ansi.Truncate(body, width-1, "…")
+	}
+	return "\r" + clearLine() + body
+}
+
+func formatCurrentRepo(name string) string {
+	if name == "" {
+		return ""
+	}
+	name = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, name)
+	if name == "" {
+		return ""
+	}
+	const maxRunes = 32
+	runes := []rune(name)
+	if len(runes) > maxRunes {
+		name = string(runes[:maxRunes-1]) + "…"
+	}
+	return "  " + name
 }
 
 func (r richProgressRenderer) label(text string) string {

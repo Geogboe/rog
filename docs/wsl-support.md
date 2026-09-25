@@ -1,8 +1,8 @@
-# WSL Support Design
+# WSL Support
 
 ## Overview
 
-For Windows users with WSL (Windows Subsystem for Linux) installed, rog should be able to scan and index repositories inside WSL distributions.
+On Windows, rog scans and indexes repositories inside WSL distributions when a root has `wsl: true`.
 
 ## Configuration
 
@@ -23,20 +23,15 @@ roots:
 
 ## Implementation Details
 
-### Path Translation
+### Scanner worker and paths
 
-When `wsl: true` is set:
-- On Windows: Use `wsl.exe` commands to access WSL filesystem
-- Git commands run inside WSL using `wsl -d <distro> -- git ...`
-- Paths are translated:
-  - WSL path: `/home/user/project`
-  - Windows path: `\\wsl$\Ubuntu\home\user\project` or `\\wsl.localhost\Ubuntu\home\user\project`
+On Windows, rog launches one bundled Linux worker per distro with `wsl.exe --exec`. The worker performs discovery, Git, language, and README reads inside Linux and streams progress and results over standard streams. There is no daemon or listening port. Windows index paths use `\\wsl$\<distro>\...`; rog does not silently scan the share if the worker fails.
+
+The matching worker is cached inside the distro at `${XDG_CACHE_HOME:-$HOME/.cache}/rog/workers/<build-id>/rog-worker`. Before first install or update, rog prompts with the distro, exact path, and changes. The default answer is no. `--approve-wsl-worker-install` explicitly approves unattended installs; `--dry-run` never installs. A refusal or failure makes the scan incomplete and preserves index entries for the affected roots. Matching cached workers require no prompt. The bundle checksum is checked before an atomic install as the normal distro user.
 
 ### Visual Distinction
 
-In `rog list` output, WSL repositories are marked:
-- Root field shows: `wsl:ubuntu-dev` instead of just `ubuntu-dev`
-- This makes it clear which repos are in WSL
+The Root column shows the configured root name. JSON output includes `is_wsl: true` and the resolved `wsl_distro`; absolute paths use the WSL UNC path so Windows commands can open them.
 
 ### Platform Detection
 
@@ -46,14 +41,7 @@ In `rog list` output, WSL repositories are marked:
 
 ### Git Operations
 
-All git commands for WSL repos must run inside WSL:
-```bash
-# Instead of:
-git -C /path status
-
-# Use:
-wsl -d Ubuntu -- git -C /path status
-```
+The worker runs Git inside the distro with bounded concurrent commands and timeouts. Windows does not launch `wsl.exe` for each repository. Git status timeouts appear as unavailable status and are reported in the scan summary.
 
 ### Editor Integration
 

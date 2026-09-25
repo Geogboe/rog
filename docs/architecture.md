@@ -392,14 +392,11 @@ rog
 
 **Index Operations**: Single-threaded (fast enough in-memory)
 
-### 4. Fuzzy Selection: fzf vs Built-in
+### 4. Native Discovery, WSL Worker, and Picker
 
-**Decision**: Shell out to `fzf` if available, fallback to plain list
+**Decision**: A bounded Go directory walker discovers Git markers on the filesystem's owning OS. The Windows build bundles a minimal Linux worker for WSL roots; one `wsl.exe --exec` process per distro streams versioned requests, progress, and results. The cache install requires explicit consent before writing. Complete roots alone are eligible for stale index cleanup.
 
-**Rationale**:
-- fzf is widely used and loved
-- Don't reinvent superior UX
-- Fallback maintains functionality
+**Selection**: The picker uses a small internal UI boundary around Bubble Tea. It scores repository matches, tracks stable path identity, and sends only the selected path to stdout. The UI dependency can be replaced without changing query or scanner logic.
 
 ### 5. Configuration: Viper vs Manual
 
@@ -468,8 +465,9 @@ rog
 - `gopkg.in/yaml.v3` - YAML parsing
 - Standard library (no frameworks)
 
-### Optional
-- `fzf` (external binary) - Interactive selection
+### Terminal UI
+- `github.com/charmbracelet/bubbletea` - Terminal lifecycle and keyboard input for the built-in picker
+- No external `fd` or `fzf` executables
 
 ### Development
 - `github.com/stretchr/testify` - Test assertions

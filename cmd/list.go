@@ -69,7 +69,7 @@ Examples:
   rog list --fields name,lang,branch # Custom fields
   rog list --json                    # JSON format
   rog list --sort last-commit --limit 10  # 10 most recently committed`,
-	Run: runList,
+	Run:     runList,
 	Aliases: []string{"ls"},
 }
 
@@ -344,16 +344,17 @@ func getFieldValue(repo *index.Repo, field string, hasRoot bool, descMaxLen int)
 	case "root":
 		return repo.Root
 	case "path":
+		relPath := strings.ReplaceAll(repo.RelPath, "\\", "/")
 		// When root is shown separately, show relative path
 		// When root is not shown, show combined path (like in short mode)
 		if hasRoot {
-			return repo.RelPath
+			return relPath
 		}
 		// Combine root and relpath for short mode
 		if repo.RelPath == "" {
 			return repo.Root
 		}
-		return repo.Root + "/" + repo.RelPath
+		return repo.Root + "/" + relPath
 	case "remote":
 		remote := repo.RemoteURL
 		if len(remote) > 40 {
@@ -397,7 +398,9 @@ func formatStatus(repo *index.Repo) string {
 	}
 
 	// Local status
-	if repo.IsDirty {
+	if repo.StatusUnavailable {
+		parts = append(parts, "status unknown")
+	} else if repo.IsDirty {
 		parts = append(parts, "dirty")
 	} else if repo.HasUntracked {
 		parts = append(parts, "untracked")

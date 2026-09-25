@@ -27,6 +27,9 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
+      - name: Build bundled WSL worker
+        run: bash scripts/build-wsl-worker.sh
+
       - name: Run go vet
         run: go vet ./...
 
@@ -47,6 +50,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - name: Build bundled WSL worker
+        run: bash scripts/build-wsl-worker.sh
 
       - name: Test cross-compilation
         run: |
