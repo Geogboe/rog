@@ -296,7 +296,7 @@ Controls scan progress rendering.
 - `auto`: use richer interactive progress when supported, otherwise fall back to plain output
 - `off`: disable progress updates
 - `plain`: static ASCII line-based progress
-- `rich`: interactive progress with optional ANSI color
+- `rich`: interactive progress with optional ANSI color; briefly shows a recently processed repository name during scans
 
 #### `llm` (optional)
 

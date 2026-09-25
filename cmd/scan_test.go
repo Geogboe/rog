@@ -90,6 +90,24 @@ func TestAutoProgressFallsBackToPlainWhenNotTTY(t *testing.T) {
 	}
 }
 
+func TestRichProgressShowsRecentRepositorySafely(t *testing.T) {
+	renderer := richProgressRenderer{}
+	line := renderer.Update(scanProgressSnapshot{
+		RootsTotal:  3,
+		ReposFound:  42,
+		CurrentRepo: "example\x1b[31m\nrepo",
+	})
+	if !strings.Contains(line, "42 repos") || !strings.Contains(line, "example[31mrepo") {
+		t.Fatalf("progress line missing counters or repository: %q", line)
+	}
+	if strings.Count(line, "\x1b") != 1 || strings.Contains(line, "\n") {
+		t.Fatalf("repository name injected terminal controls: %q", line)
+	}
+	if got := formatCurrentRepo(strings.Repeat("a", 50)); len([]rune(strings.TrimSpace(got))) != 32 {
+		t.Fatalf("long repository name was not shortened: %q", got)
+	}
+}
+
 const unicodeMaxASCII = 127
 
 func TestRichProgressFinishUsesTerminalSafeLineEnding(t *testing.T) {

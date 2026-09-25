@@ -30,6 +30,7 @@ type scanProgressSnapshot struct {
 	RootsTotal     int
 	RootsCompleted int
 	ReposFound     int
+	CurrentRepo    string
 	StaleRemoved   int
 	Duration       time.Duration
 }
@@ -119,7 +120,28 @@ func (r richProgressRenderer) renderLine(label string, snapshot scanProgressSnap
 		snapshot.RootsTotal,
 		snapshot.ReposFound,
 		formatProgressDuration(snapshot.Duration),
-	)
+	) + formatCurrentRepo(snapshot.CurrentRepo)
+}
+
+func formatCurrentRepo(name string) string {
+	if name == "" {
+		return ""
+	}
+	name = strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 {
+			return -1
+		}
+		return r
+	}, name)
+	if name == "" {
+		return ""
+	}
+	const maxRunes = 32
+	runes := []rune(name)
+	if len(runes) > maxRunes {
+		name = string(runes[:maxRunes-1]) + "…"
+	}
+	return "  " + name
 }
 
 func (r richProgressRenderer) label(text string) string {

@@ -120,6 +120,7 @@ func runScan(cmd *cobra.Command, args []string) {
 						RootsTotal:     metrics.RootsTotal,
 						RootsCompleted: metrics.RootsCompleted,
 						ReposFound:     metrics.ReposFound,
+						CurrentRepo:    metrics.CurrentRepo,
 						Duration:       time.Since(start),
 					}))
 				case <-stopProgress:

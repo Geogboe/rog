@@ -45,6 +45,7 @@ type ScanMetrics struct {
 	DirsSkipped    int // max depth
 	ReposFound     int
 	ReposReused    int
+	CurrentRepo    string
 	RootsTotal     int
 	RootsCompleted int
 	TotalDirs      int
@@ -106,6 +107,7 @@ func (s *Scanner) SnapshotMetrics() ScanMetrics {
 		DirsSkipped:    s.metrics.DirsSkipped,
 		ReposFound:     s.metrics.ReposFound,
 		ReposReused:    s.metrics.ReposReused,
+		CurrentRepo:    s.metrics.CurrentRepo,
 		RootsTotal:     s.metrics.RootsTotal,
 		RootsCompleted: s.metrics.RootsCompleted,
 		TotalDirs:      s.metrics.TotalDirs,
@@ -183,6 +185,9 @@ func (s *Scanner) Scan() error {
 			go func() {
 				defer wg.Done()
 				for repoPath := range repoChan {
+					s.metrics.mu.Lock()
+					s.metrics.CurrentRepo = filepath.Base(repoPath)
+					s.metrics.mu.Unlock()
 					s.foundMu.Lock()
 					s.foundPaths[repoPath] = struct{}{}
 					s.foundMu.Unlock()
