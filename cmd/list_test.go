@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"text/tabwriter"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
@@ -167,13 +166,27 @@ func TestCompactTableCells(t *testing.T) {
 	assert.LessOrEqual(t, ansi.StringWidth(truncateTableCell(strings.Repeat("界", 20), "name", 80, 3)), 20)
 }
 
-func TestColoredTableCellHasNoWriterMarkers(t *testing.T) {
-	var buf bytes.Buffer
-	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', tabwriter.StripEscape)
-	_, err := fmt.Fprintln(w, colorTableCell("repo", "name", &index.Repo{}))
-	require.NoError(t, err)
-	require.NoError(t, w.Flush())
-	assert.Equal(t, "\x1b[36mrepo\x1b[0m\n", buf.String())
+func TestColoredTableAlignsWithinTerminalWidth(t *testing.T) {
+	for _, width := range []int{120, 60, 30, 12} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			var buf bytes.Buffer
+			writeTable(&buf, createTestIndexForCmd().List(), false, false, nil, width, true)
+			output := buf.String()
+			assert.NotContains(t, output, "\xff")
+			assert.Contains(t, output, "\x1b[36m")
+			lines := strings.Split(strings.TrimSpace(ansi.Strip(output)), "\n")
+			for _, line := range lines[:3] {
+				assert.LessOrEqual(t, ansi.StringWidth(line), width, "line %q exceeds width %d", line, width)
+			}
+			header, row := lines[0], lines[1]
+			if width >= 24 {
+				assert.Equal(t, strings.Index(header, "PATH"), ansi.StringWidth(row[:strings.Index(row, "test-root/")]))
+			}
+			if width >= 50 {
+				assert.Equal(t, strings.Index(header, "STATUS"), strings.Index(row, "clean"))
+			}
+		})
+	}
 }
 
 func TestOutputTableLong(t *testing.T) {

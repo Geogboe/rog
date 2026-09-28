@@ -3,9 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
-	"text/tabwriter"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
@@ -246,14 +246,20 @@ func parseFields(fieldsStr string) []string {
 }
 
 func outputTable(repos []*index.Repo, short bool, long bool, customFields []string) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.StripEscape)
 	interactive := isInteractiveTerminal(os.Stdout)
 	color := interactive && supportsANSIColor()
 	width := 0
 	if interactive {
-		width, _, _ = term.GetSize(os.Stdout.Fd())
+		var err error
+		width, _, err = term.GetSize(os.Stdout.Fd())
+		if err != nil || width <= 0 {
+			width = 80
+		}
 	}
+	writeTable(os.Stdout, repos, short, long, customFields, width, color)
+}
 
+func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, customFields []string, width int, color bool) {
 	// Determine which fields to display
 	var fields []string
 	var descMaxLen int
@@ -273,6 +279,9 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 		}
 		if width > 0 && width < 50 {
 			fields = []string{"name", "path"}
+		}
+		if width > 0 && width < 24 {
+			fields = []string{"name"}
 		}
 		descMaxLen = 0 // Normal mode: no description
 	}
@@ -302,8 +311,6 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 			header[i] = strings.ToUpper(field)
 		}
 	}
-	fmt.Fprintln(w, strings.Join(header, "\t"))
-
 	// Check if root is in the fields
 	hasRoot := false
 	for _, field := range fields {
@@ -313,7 +320,11 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 		}
 	}
 
-	// Print rows
+	rows := make([][]string, 0, len(repos))
+	widths := make([]int, len(fields))
+	for i, heading := range header {
+		widths[i] = ansi.StringWidth(heading)
+	}
 	for _, repo := range repos {
 		values := make([]string, len(fields))
 		for i, field := range fields {
@@ -325,16 +336,35 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 			if width > 0 && len(customFields) == 0 && !short && !long {
 				value = truncateTableCell(value, field, width, len(fields))
 			}
-			if color {
-				value = colorTableCell(value, field, repo)
-			}
 			values[i] = value
+			if cellWidth := ansi.StringWidth(value); cellWidth > widths[i] {
+				widths[i] = cellWidth
+			}
 		}
-		fmt.Fprintln(w, strings.Join(values, "\t"))
+		rows = append(rows, values)
 	}
 
-	w.Flush()
-	fmt.Printf("\nTotal: %d repositories\n", len(repos))
+	writeTableRow(out, header, widths)
+	for rowIndex, values := range rows {
+		if color {
+			for i := range values {
+				values[i] = colorTableCell(values[i], fields[i], repos[rowIndex])
+			}
+		}
+		writeTableRow(out, values, widths)
+	}
+	fmt.Fprintf(out, "\nTotal: %d repositories\n", len(repos))
+}
+
+func writeTableRow(out io.Writer, cells []string, widths []int) {
+	for i, cell := range cells {
+		fmt.Fprint(out, cell)
+		if i < len(cells)-1 {
+			padding := widths[i] - ansi.StringWidth(cell) + 2
+			fmt.Fprint(out, strings.Repeat(" ", padding))
+		}
+	}
+	fmt.Fprintln(out)
 }
 
 func formatCompactStatus(repo *index.Repo) string {
@@ -366,7 +396,9 @@ func cleanTableCell(value string) string {
 
 func truncateTableCell(value, field string, width, columns int) string {
 	limit := 0
-	if columns == 2 {
+	if columns == 1 {
+		limit = width
+	} else if columns == 2 {
 		switch field {
 		case "name":
 			limit = width / 3
@@ -402,7 +434,6 @@ func truncateTableCell(value, field string, width, columns int) string {
 	return ansi.Truncate(value, limit, "…")
 }
 
-// Tabwriter escape delimiters keep ANSI sequences out of column width calculations.
 func colorTableCell(value, field string, repo *index.Repo) string {
 	code := ""
 	switch field {
@@ -418,7 +449,7 @@ func colorTableCell(value, field string, repo *index.Repo) string {
 	if code == "" {
 		return value
 	}
-	return "\xff\x1b[" + code + "m\xff" + value + "\xff\x1b[0m\xff"
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
 }
 
 // getFieldValue returns the value for a specific field from a repo
