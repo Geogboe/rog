@@ -170,6 +170,8 @@ rog report                         # Weekly, Dashboard, Log, and AI tabs in a te
 rog report --since 2026-09-01 --until 2026-09-28 -o markdown
 rog report -o json > work.json
 rog report -o html --file work.html --open
+rog report --open .             # Save a new HTML report here and open it
+rog report --open               # Save to a temporary HTML file and open it
 rog report --llm -o html --file work-with-ai.html
 ```
 
@@ -178,6 +180,8 @@ Redirected output defaults to Markdown. `--since` is inclusive; a date-only
 for browser Print to PDF. Weekly and AI Summary, when generated, appear in the
 printed copy. In the terminal, Tab or arrow keys switch views, Up/Down scroll,
 and `g` on AI Summary asks before sending evidence to the configured provider.
+The optional path after `--open` is an existing output directory or an `.html`
+filename; it does not limit the report to that repository.
 
 Rog reads commits reachable from all local branches and indexed worktree HEADs,
 including branches that are not checked out. Separate clones remain separate

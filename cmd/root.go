@@ -51,7 +51,7 @@ func Execute() error {
 
 	// If we get an "unknown command" error and there are args,
 	// treat it as an alias for "rog list <args>"
-	if err != nil && strings.Contains(err.Error(), "unknown command") {
+	if err != nil && strings.Contains(err.Error(), "unknown command") && strings.Contains(err.Error(), ` for "rog"`) {
 		// Extract the unknown command from the error message
 		// Error format: unknown command "foo" for "rog"
 		unknownCmd := extractUnknownCommand(err.Error())
@@ -74,7 +74,11 @@ func Execute() error {
 
 			if cmdInserted {
 				rootCmd.SetArgs(newArgs)
-				return rootCmd.Execute()
+				err = rootCmd.Execute()
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Error:", err)
+				}
+				return err
 			}
 		}
 

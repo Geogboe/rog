@@ -32,9 +32,9 @@ var (
 )
 
 var reportCmd = &cobra.Command{
-	Use: "report", Short: "Report work across Configured Roots",
+	Use: "report [html-file-or-directory]", Short: "Report work across Configured Roots",
 	Long: "Summarize authored commits on all local branches and current working-tree changes from indexed repositories. New repositories require 'rog scan'. The default range is this week in local time. AI generation is opt-in.",
-	Args: cobra.NoArgs, RunE: runReport,
+	Args: cobra.MaximumNArgs(1), RunE: runReport,
 }
 
 func init() {
@@ -46,7 +46,7 @@ func init() {
 	reportCmd.Flags().StringVar(&reportView, "view", "", "Markdown view: weekly, dashboard, log, ai; default includes all")
 	reportCmd.Flags().StringVar(&reportFile, "file", "", "Write export atomically to this file")
 	reportCmd.Flags().StringVar(&reportProgressMode, "progress", "", "Progress mode: auto, rich, plain, off")
-	reportCmd.Flags().BoolVar(&reportOpen, "open", false, "Open a saved HTML report in the browser")
+	reportCmd.Flags().BoolVar(&reportOpen, "open", false, "Save an HTML report and open it in the browser; optional directory or .html path")
 	reportCmd.Flags().BoolVar(&reportLLM, "llm", false, "Explicitly generate an AI Summary using the configured provider")
 	reportCmd.Flags().BoolVar(&reportApproveWorker, "approve-wsl-worker-install", false, "Approve installing the matching report worker in configured WSL distros")
 }
@@ -62,10 +62,13 @@ func ExitCode(err error) int {
 	return 1
 }
 
-func runReport(cmd *cobra.Command, _ []string) error {
+func runReport(cmd *cobra.Command, args []string) error {
 	start := time.Now()
+	outputMode, outputPath, err := resolveReportDestination(args, start)
+	if err != nil {
+		return err
+	}
 	since, until := report.CurrentWeek(start)
-	var err error
 	if reportSince != "" {
 		since, err = parseReportDate(reportSince, false)
 		if err != nil {
@@ -86,9 +89,6 @@ func runReport(cmd *cobra.Command, _ []string) error {
 	}
 	if reportOutput != "" && reportOutput != "markdown" && reportOutput != "json" && reportOutput != "html" {
 		return fmt.Errorf("invalid --output %q (markdown, json, html)", reportOutput)
-	}
-	if reportOpen && (reportOutput != "html" || reportFile == "") {
-		return fmt.Errorf("--open requires -o html --file PATH")
 	}
 	cfg, err := config.Load()
 	if err != nil {
@@ -220,8 +220,8 @@ func runReport(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	tracker.Close()
-	mode := reportOutput
-	if mode == "" && reportFile == "" && reportView == "" && isInteractiveTerminal(os.Stdout) {
+	mode := outputMode
+	if mode == "" && outputPath == "" && reportView == "" && isInteractiveTerminal(os.Stdout) {
 		var action func(context.Context) (string, error)
 		provider := "Configure llm.endpoint and llm.model"
 		if cfg.LLM != nil && cfg.LLM.Endpoint != "" && cfg.LLM.Model != "" {
@@ -258,18 +258,19 @@ func runReport(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if reportFile != "" {
-		if err := writeReportFile(reportFile, output); err != nil {
+	if outputPath != "" {
+		if err := writeReportFile(outputPath, output); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stderr, "Report saved:", reportFile)
+		fmt.Fprintln(os.Stderr, "Report saved:", outputPath)
 	} else {
 		if _, err := os.Stdout.Write(output); err != nil {
 			return err
 		}
 	}
 	if reportOpen {
-		if err := openReportFile(reportFile); err != nil {
+		fmt.Fprintln(os.Stderr, "Opening report:", outputPath)
+		if err := openReportFile(outputPath); err != nil {
 			return err
 		}
 	}
@@ -286,6 +287,39 @@ func runReport(cmd *cobra.Command, _ []string) error {
 		return &reportExitError{code: 2}
 	}
 	return nil
+}
+
+func resolveReportDestination(args []string, now time.Time) (string, string, error) {
+	if len(args) > 1 {
+		return "", "", fmt.Errorf("expected at most one HTML file or directory")
+	}
+	if !reportOpen {
+		if len(args) > 0 {
+			return "", "", fmt.Errorf("%q requires --open; reports otherwise cover all Configured Roots", args[0])
+		}
+		return reportOutput, reportFile, nil
+	}
+	if reportOutput != "" && reportOutput != "html" {
+		return "", "", fmt.Errorf("--open requires HTML output; remove -o %s or use -o html", reportOutput)
+	}
+	if len(args) > 0 && reportFile != "" {
+		return "", "", fmt.Errorf("choose either --file or the path after --open")
+	}
+	if reportFile != "" {
+		return "html", reportFile, nil
+	}
+	destination := os.TempDir()
+	if len(args) > 0 {
+		destination = args[0]
+	}
+	if info, err := os.Stat(destination); err == nil && info.IsDir() {
+		name := fmt.Sprintf("rog-report-%s-%d.html", now.Format("2006-01-02-150405"), os.Getpid())
+		return "html", filepath.Join(destination, name), nil
+	}
+	if len(args) > 0 && strings.EqualFold(filepath.Ext(destination), ".html") {
+		return "html", destination, nil
+	}
+	return "", "", fmt.Errorf("--open path %q must be an existing directory or an .html file", destination)
 }
 
 func containsWarning(warnings []string, needle string) bool {
