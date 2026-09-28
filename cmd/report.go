@@ -26,9 +26,9 @@ import (
 )
 
 var (
-	reportSince, reportUntil, reportOutput, reportView, reportFile string
-	reportEmails                                                   []string
-	reportOpen, reportLLM, reportApproveWorker                     bool
+	reportSince, reportUntil, reportOutput, reportView, reportFile, reportProgressMode string
+	reportEmails                                                                       []string
+	reportOpen, reportLLM, reportApproveWorker                                         bool
 )
 
 var reportCmd = &cobra.Command{
@@ -45,6 +45,7 @@ func init() {
 	reportCmd.Flags().StringVarP(&reportOutput, "output", "o", "", "Output: markdown, json, html; defaults to terminal tabs or Markdown when redirected")
 	reportCmd.Flags().StringVar(&reportView, "view", "", "Markdown view: weekly, dashboard, log, ai; default includes all")
 	reportCmd.Flags().StringVar(&reportFile, "file", "", "Write export atomically to this file")
+	reportCmd.Flags().StringVar(&reportProgressMode, "progress", "", "Progress mode: auto, rich, plain, off")
 	reportCmd.Flags().BoolVar(&reportOpen, "open", false, "Open a saved HTML report in the browser")
 	reportCmd.Flags().BoolVar(&reportLLM, "llm", false, "Explicitly generate an AI Summary using the configured provider")
 	reportCmd.Flags().BoolVar(&reportApproveWorker, "approve-wsl-worker-install", false, "Approve installing the matching report worker in configured WSL distros")
@@ -137,13 +138,17 @@ func runReport(cmd *cobra.Command, _ []string) error {
 	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 	defer stop()
-	if len(local) > 0 {
-		fmt.Fprintf(os.Stderr, "Collecting work from %d local indexed repositories...\n", len(local))
+	progressMode, err := resolveProgressMode(reportProgressMode, "")
+	if err != nil {
+		return err
 	}
-	progress := func(done, total int, _ string) {
-		if done%25 == 0 || done == total {
-			fmt.Fprintf(os.Stderr, "[report] %d/%d projects collected\n", done, total)
-		}
+	tracker := newReportProgress(progressMode)
+	defer tracker.Close()
+	if len(local) > 0 {
+		tracker.Phase("Local Git", len(local))
+	}
+	progress := func(done, total int, recent string) {
+		tracker.Advance(done, total, recent)
 	}
 	projects, warnings := report.CollectLocal(ctx, local, report.Options{Since: since, Until: until, AuthorEmails: emails, IncludePatches: reportLLM && cfg.LLM != nil, OnProgress: progress})
 	d.Projects = append(d.Projects, projects...)
@@ -159,11 +164,13 @@ func runReport(cmd *cobra.Command, _ []string) error {
 			if reportApproveWorker {
 				return true
 			}
+			tracker.Pause()
+			defer tracker.Resume()
 			return approveWSLWorker(name, path)
 		}}
-		fmt.Fprintf(os.Stderr, "Collecting work from %d WSL indexed repositories in %s...\n", len(repos), distro)
+		tracker.Phase("WSL "+distro, len(repos))
 		remoteProjects, remoteWarnings, err := bridge.Report(ctx, distro, distroRoots, repos, report.Options{Since: since, Until: until, AuthorEmails: emails, IncludePatches: reportLLM && cfg.LLM != nil, OnProgress: func(done, total int, _ string) {
-			fmt.Fprintf(os.Stderr, "[report] WSL %s %d/%d projects collected\n", distro, done, total)
+			tracker.Advance(done, total, "")
 		}})
 		if err != nil {
 			d.Warnings = append(d.Warnings, fmt.Sprintf("WSL %s: %v", distro, err))
@@ -197,25 +204,29 @@ func runReport(cmd *cobra.Command, _ []string) error {
 		return report.GenerateAI(callCtx, d, cfg.LLM)
 	}
 	if reportLLM {
+		tracker.Pause()
 		if cfg.LLM != nil && cfg.LLM.Endpoint != "" && cfg.LLM.Model != "" {
-			fmt.Fprintf(os.Stderr, "AI Summary: sending at most %d bytes of evidence to %s (output cap %d tokens; timeout %s)\n", report.MaxAIContextBytes, report.ProviderHost(cfg.LLM), report.MaxAIOutputTokens, report.AITimeout)
+			fmt.Fprintf(os.Stderr, "AI Summary: about %d bytes of evidence to %s (cap %d bytes; output cap %d tokens; timeout %s)\n", len(report.Evidence(d)), report.ProviderHost(cfg.LLM), report.MaxAIContextBytes, report.MaxAIOutputTokens, report.AITimeout)
 			if estimate := report.CostEstimate(cfg.Report); estimate != "" {
 				fmt.Fprintln(os.Stderr, estimate)
 			}
 		}
+		tracker.Resume()
+		tracker.Phase("AI Summary", 0)
 		d.AISummary, err = generate(ctx)
 		if err != nil {
 			d.Warnings = append(d.Warnings, "AI Summary: "+err.Error())
 			d.Complete = false
 		}
 	}
+	tracker.Close()
 	mode := reportOutput
 	if mode == "" && reportFile == "" && reportView == "" && isInteractiveTerminal(os.Stdout) {
 		var action func(context.Context) (string, error)
 		provider := "Configure llm.endpoint and llm.model"
 		if cfg.LLM != nil && cfg.LLM.Endpoint != "" && cfg.LLM.Model != "" {
 			action = generate
-			provider = fmt.Sprintf("%s (up to %d bytes)", report.ProviderHost(cfg.LLM), report.MaxAIContextBytes)
+			provider = fmt.Sprintf("%s (~%d bytes metadata, up to %d bytes with patches)", report.ProviderHost(cfg.LLM), len(report.Evidence(d)), report.MaxAIContextBytes)
 		}
 		d, err = reportui.Run(ctx, d, provider, action)
 		if err != nil {

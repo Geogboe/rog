@@ -25,11 +25,19 @@ type generated struct {
 	text string
 	err  error
 }
+type aiTick time.Time
+
+func nextAITick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(now time.Time) tea.Msg { return aiTick(now) })
+}
+
 type model struct {
 	doc                        report.Document
 	tab, offset, width, height int
 	color, confirm, busy       bool
 	cancelled                  bool
+	aiFrame                    int
+	aiStarted                  time.Time
 	status, provider           string
 	generate                   func(context.Context) (string, error)
 	ctx                        context.Context
@@ -50,6 +58,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.doc.AISummary = msg.text
 			m.status = "AI Summary generated"
 		}
+	case aiTick:
+		if m.busy {
+			m.aiFrame++
+			return m, nextAITick()
+		}
 	case tea.KeyMsg:
 		key := msg.String()
 		if m.confirm {
@@ -60,8 +73,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if key == "y" || key == "Y" {
 				m.busy = true
+				m.aiStarted = time.Now()
+				m.aiFrame = 0
 				m.status = "Generating AI Summary..."
-				return m, func() tea.Msg { s, e := m.generate(m.ctx); return generated{s, e} }
+				return m, tea.Batch(func() tea.Msg { s, e := m.generate(m.ctx); return generated{s, e} }, nextAITick())
 			}
 			m.status = "AI request cancelled"
 			return m, nil
@@ -151,6 +166,10 @@ func (m model) View() string {
 	}
 	if m.status != "" {
 		status = m.status
+	}
+	if m.busy {
+		spinner := []string{"◐", "◓", "◑", "◒"}
+		status = fmt.Sprintf("%s Generating AI Summary · %s elapsed · Ctrl+C cancels", spinner[m.aiFrame%len(spinner)], time.Since(m.aiStarted).Round(time.Second))
 	}
 	b.WriteString(ansi.Truncate(status, w, "…"))
 	return b.String()

@@ -190,8 +190,11 @@ appear in the Log but their diff volume is excluded from totals. Remote-only
 branches, deleted branches, and stashes are not included.
 
 Unlike `rog list`, reporting checks Git history and working trees live. A large
-set of Configured Roots can take minutes; progress goes to stderr. Incomplete
-reports keep the readable evidence, include warnings, and exit with code 2.
+set of Configured Roots can take minutes; progress goes to stderr. Interactive
+progress updates one line with the phase, elapsed time, project count, and a
+recent repository. Use `--progress plain` for occasional log lines or
+`--progress off` to suppress progress. Incomplete reports keep the readable
+evidence, include warnings, and exit with code 2.
 Ctrl+C exits with code 130. JSON contains the full warning list; the human
 views show a short warning summary.
 
@@ -206,6 +209,22 @@ not a billing guarantee. A failed AI request leaves the factual report usable.
 Windows reports use the WSL worker for indexed WSL roots. A new worker build
 requires the same explicit cache-install approval as `rog scan`; unattended runs
 may use `--approve-wsl-worker-install`.
+
+For an OpenAI-compatible local server, set `llm.endpoint` to its `/v1` base
+URL and `llm.model` to the exact model ID returned by its models endpoint:
+
+```yaml
+llm:
+  endpoint: http://127.0.0.1:11434/v1
+  model: your-local-model-id
+```
+
+Then run `rog report --llm -o markdown` or open `rog report`, switch to AI
+Summary, and press `g`. A plain `rog report` never contacts the model. Windows
+rog uses the Windows endpoint; rog launched directly in WSL uses the WSL
+endpoint. Each environment loads its own rog config file. If the local server
+requires a key, provide it through `ROG_LLM_API_KEY` rather than saving it in
+the config file.
 
 ### `rog select` / `rog sel`
 
