@@ -182,7 +182,7 @@ All tests passing with `go test ./...`
 - **docs/wsl-support.md**: Windows/WSL integration guide
 
 ### Developer Facing
-- **CLAUDE.md**: Development guidelines and workflow
+- **AGENTS.md**: Development guidelines and workflow (`CLAUDE.md` points to it)
 - **docs/development.md**: This file - implementation summary
 - Inline code documentation throughout
 
