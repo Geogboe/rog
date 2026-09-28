@@ -158,6 +158,55 @@ redirected output has no color codes. Narrow terminals show fewer columns;
 `--long` and `--fields` expose the full field set. Use `-o json` or `-o yaml`
 for structured output, or `-o path` for one absolute path per line.
 
+### `rog report`
+
+Review work in repositories already indexed under your **Configured Roots**. Run
+`rog scan` after adding a repository or changing roots. The report shows its
+index timestamp and warns when evidence is incomplete. By default it covers
+Monday 00:00 through now in your local timezone.
+
+```bash
+rog report                         # Weekly, Dashboard, Log, and AI tabs in a terminal
+rog report --since 2026-09-01 --until 2026-09-28 -o markdown
+rog report -o json > work.json
+rog report -o html --file work.html --open
+rog report --llm -o html --file work-with-ai.html
+```
+
+Redirected output defaults to Markdown. `--since` is inclusive; a date-only
+`--until` includes that whole day. HTML is self-contained and has print styling
+for browser Print to PDF. Weekly and AI Summary, when generated, appear in the
+printed copy. In the terminal, Tab or arrow keys switch views, Up/Down scroll,
+and `g` on AI Summary asks before sending evidence to the configured provider.
+
+Rog reads commits reachable from all local branches and indexed worktree HEADs,
+including branches that are not checked out. Separate clones remain separate
+projects. It matches each repository's effective Git `user.email`; use repeated
+`--author-email` values or `report.author_emails` in config when needed. Current
+working-tree changes are listed separately because they have no reliable author
+or historical date. Active days, commit counts, changed paths, and line counts
+describe observed Git activity; they do not measure hours worked. Merge commits
+appear in the Log but their diff volume is excluded from totals. Remote-only
+branches, deleted branches, and stashes are not included.
+
+Unlike `rog list`, reporting checks Git history and working trees live. A large
+set of Configured Roots can take minutes; progress goes to stderr. Incomplete
+reports keep the readable evidence, include warnings, and exit with code 2.
+Ctrl+C exits with code 130. JSON contains the full warning list; the human
+views show a short warning summary.
+
+AI Summary is opt-in (`--llm` or the terminal Generate action). Rog sends bounded
+commit metadata and selected committed patch hunks to the configured endpoint;
+uncommitted patch text is never sent. Sensitive paths and recognizable secret
+lines are excluded, but review the endpoint and privacy implications before
+using a remote provider. The request has a 24 KiB evidence cap, a 1,200-token
+output cap, and a 45-second deadline. Optional `report.input_usd_per_million`
+and `report.output_usd_per_million` config values show a rough cost estimate,
+not a billing guarantee. A failed AI request leaves the factual report usable.
+Windows reports use the WSL worker for indexed WSL roots. A new worker build
+requires the same explicit cache-install approval as `rog scan`; unattended runs
+may use `--approve-wsl-worker-install`.
+
 ### `rog select` / `rog sel`
 
 Interactively select a repository with rog's built-in picker. It shows name, root/path, language, status, and details. The active row, matching letters, and Git status use restrained color on supported terminals; `NO_COLOR` disables it. Keyboard hints shorten in narrow terminals. Type to filter; use arrows or Page Up/Down to move, Enter to select, and Escape or Ctrl+C to cancel. The picker writes only the chosen path to stdout and draws on the terminal, so command substitution works. If multiple results require a picker but no terminal is available, rog prints an actionable error.

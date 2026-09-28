@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Geogboe/rog/internal/index"
+	"github.com/Geogboe/rog/internal/report"
 	"github.com/Geogboe/rog/internal/scanner"
 	"github.com/Geogboe/rog/internal/workerproto"
 )
@@ -26,6 +27,13 @@ func main() {
 	}
 	if req.Version != workerproto.Version {
 		fail(fmt.Errorf("protocol version %d, need %d", req.Version, workerproto.Version))
+	}
+	if req.Operation == "report" {
+		runReport(req)
+		return
+	}
+	if req.Operation != "" && req.Operation != "scan" {
+		fail(fmt.Errorf("unknown worker operation %q", req.Operation))
 	}
 	idx := index.New()
 	for _, repo := range req.Existing {
@@ -97,6 +105,35 @@ func main() {
 		Reused: metrics.ReposReused, Refreshed: metrics.ReposRefreshed, StatusUnavailable: metrics.StatusUnavailable, StatusTimeouts: metrics.StatusTimeouts,
 		DiscoveryNanos: int64(metrics.DiscoveryDuration), GitNanos: int64(metrics.GitDuration), MetadataNanos: int64(metrics.MetadataDuration)}
 	if err := encoder.Encode(workerproto.Event{Type: "result", Result: &response}); err != nil {
+		fail(err)
+	}
+}
+
+func runReport(req workerproto.Request) {
+	if req.Report == nil {
+		fail(fmt.Errorf("missing report request"))
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	encoder := json.NewEncoder(os.Stdout)
+	projects, warnings := report.CollectLocal(ctx, req.Existing, report.Options{Since: req.Report.Since, Until: req.Report.Until, AuthorEmails: req.Report.AuthorEmails, IncludePatches: req.Report.IncludePatches, OnProgress: func(done, total int, _ string) {
+		if done%10 == 0 || done == total {
+			if err := encoder.Encode(workerproto.Event{Type: "report_progress", ReportProgress: &workerproto.ReportProgress{Completed: done, Total: total}}); err != nil {
+				stop()
+			}
+		}
+	}})
+	for i := range projects {
+		if err := encoder.Encode(workerproto.Event{Type: "project", Project: &projects[i]}); err != nil {
+			fail(err)
+		}
+		if len(projects[i].AIPatches) > 0 {
+			if err := encoder.Encode(workerproto.Event{Type: "patches", Patches: &workerproto.PatchEvent{Index: i, Excerpts: projects[i].AIPatches}}); err != nil {
+				fail(err)
+			}
+		}
+	}
+	if err := encoder.Encode(workerproto.Event{Type: "result", Result: &workerproto.Response{Version: workerproto.Version, Warnings: warnings}}); err != nil {
 		fail(err)
 	}
 }

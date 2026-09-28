@@ -6,11 +6,32 @@ import (
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/metadata"
+	"github.com/Geogboe/rog/internal/report"
+	"time"
 )
 
-const Version = 1
+const Version = 2
+
+type ReportRequest struct {
+	Since          time.Time `json:"since"`
+	Until          time.Time `json:"until"`
+	AuthorEmails   []string  `json:"author_emails,omitempty"`
+	IncludePatches bool      `json:"include_patches,omitempty"`
+}
+
+type PatchEvent struct {
+	Index    int      `json:"index"`
+	Excerpts []string `json:"excerpts"`
+}
+
+type ReportProgress struct {
+	Completed int `json:"completed"`
+	Total     int `json:"total"`
+}
 
 type Request struct {
+	Operation  string               `json:"operation,omitempty"`
+	Report     *ReportRequest       `json:"report,omitempty"`
 	Version    int                  `json:"version"`
 	Config     config.Config        `json:"config"`
 	Existing   []*index.Repo        `json:"existing"`
@@ -47,7 +68,10 @@ type Progress struct {
 }
 
 type Event struct {
-	Type     string    `json:"type"`
-	Progress *Progress `json:"progress,omitempty"`
-	Result   *Response `json:"result,omitempty"`
+	Type           string          `json:"type"`
+	Progress       *Progress       `json:"progress,omitempty"`
+	Result         *Response       `json:"result,omitempty"`
+	Project        *report.Project `json:"project,omitempty"`
+	Patches        *PatchEvent     `json:"patches,omitempty"`
+	ReportProgress *ReportProgress `json:"report_progress,omitempty"`
 }

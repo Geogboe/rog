@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/Geogboe/rog/internal/config"
@@ -337,6 +338,11 @@ func approveWSLWorker(distro, cachePath string) bool {
 	if approveWSLWorkerInstall {
 		return true
 	}
+	// A detached process can still open CONIN$ but has nobody to answer. Never
+	// wait for consent unless stdin and stderr are real interactive handles.
+	if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stderr.Fd()) {
+		return false
+	}
 	input, err := os.OpenFile("CONIN$", os.O_RDONLY, 0)
 	if err != nil {
 		return false
@@ -347,7 +353,7 @@ func approveWSLWorker(distro, cachePath string) bool {
 		return false
 	}
 	defer output.Close()
-	fmt.Fprintf(output, "rog needs to install its bundled scanner in WSL distro %s\nPath: %s\nCreate or replace this cached executable? [y/N] ", distro, cachePath)
+	fmt.Fprintf(output, "rog needs to install its bundled worker in WSL distro %s\nPath: %s\nCreate or replace this cached executable? [y/N] ", distro, cachePath)
 	answer, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil {
 		return false

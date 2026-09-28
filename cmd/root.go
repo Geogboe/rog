@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -84,6 +85,10 @@ func Execute() error {
 
 	// For other errors, print them
 	if err != nil {
+		var reportExit *reportExitError
+		if errors.As(err, &reportExit) {
+			return err
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 	}
 

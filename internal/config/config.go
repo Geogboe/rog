@@ -12,12 +12,20 @@ import (
 
 // Config represents the rog configuration
 type Config struct {
-	GlobalExcludes []string    `yaml:"global_excludes,omitempty"`
-	Roots          []Root      `yaml:"roots"`
-	Editor         string      `yaml:"editor"`
-	Scan           *ScanConfig `yaml:"scan,omitempty"`
-	LLM            *LLMConfig  `yaml:"llm,omitempty"`
-	List           *ListConfig `yaml:"list,omitempty"`
+	GlobalExcludes []string      `yaml:"global_excludes,omitempty"`
+	Roots          []Root        `yaml:"roots"`
+	Editor         string        `yaml:"editor"`
+	Scan           *ScanConfig   `yaml:"scan,omitempty"`
+	LLM            *LLMConfig    `yaml:"llm,omitempty"`
+	List           *ListConfig   `yaml:"list,omitempty"`
+	Report         *ReportConfig `yaml:"report,omitempty"`
+}
+
+// ReportConfig lists Git author identities used across configured roots.
+type ReportConfig struct {
+	AuthorEmails        []string `yaml:"author_emails,omitempty"`
+	InputUSDPerMillion  float64  `yaml:"input_usd_per_million,omitempty"`
+	OutputUSDPerMillion float64  `yaml:"output_usd_per_million,omitempty"`
 }
 
 // Root represents a search root configuration

@@ -463,6 +463,9 @@ func IsGitRepo(path string) bool {
 var gitPathOnce sync.Once
 var gitPath string
 
+// Executable returns the Git binary used by rog on this operating system.
+func Executable() string { return gitExecutable() }
+
 // gitExecutable tolerates Windows shells with a reduced PATH or no PATHEXT.
 func gitExecutable() string {
 	gitPathOnce.Do(func() {
