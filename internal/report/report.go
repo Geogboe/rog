@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -125,6 +126,7 @@ type Metrics struct {
 type Options struct {
 	Since, Until   time.Time
 	AuthorEmails   []string
+	OnGrouping     func(done, total int)
 	OnProgress     func(done, total int, name string)
 	IncludePatches bool
 }
@@ -162,6 +164,7 @@ func CollectLocal(ctx context.Context, repos []*index.Repo, opts Options) ([]Pro
 	groups := map[string]*group{}
 	var warnings []string
 	var groupMu sync.Mutex
+	grouped := 0
 	preflight := make(chan *index.Repo)
 	var preflightWG sync.WaitGroup
 	for range min(8, len(repos)) {
@@ -172,12 +175,20 @@ func CollectLocal(ctx context.Context, repos []*index.Repo, opts Options) ([]Pro
 				if repo == nil {
 					continue
 				}
-				out, err := git(ctx, repo.AbsPath, 3*time.Second, 4096, "rev-parse", "--git-common-dir")
+				common, err := readCommonGitDir(repo.AbsPath)
+				if err != nil {
+					out, gitErr := git(ctx, repo.AbsPath, 3*time.Second, 4096, "rev-parse", "--git-common-dir")
+					if gitErr == nil {
+						common = strings.TrimSpace(string(out))
+						err = nil
+					} else {
+						err = gitErr
+					}
+				}
 				groupMu.Lock()
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("%s: Git repository unavailable: %v", repo.AbsPath, err))
 				} else {
-					common := strings.TrimSpace(string(out))
 					if !filepath.IsAbs(common) {
 						common = filepath.Join(repo.AbsPath, common)
 					}
@@ -186,6 +197,10 @@ func CollectLocal(ctx context.Context, repos []*index.Repo, opts Options) ([]Pro
 						groups[key] = &group{key: key}
 					}
 					groups[key].repos = append(groups[key].repos, repo)
+				}
+				grouped++
+				if opts.OnGrouping != nil {
+					opts.OnGrouping(grouped, len(repos))
 				}
 				groupMu.Unlock()
 			}
@@ -243,16 +258,88 @@ func CollectLocal(ctx context.Context, repos []*index.Repo, opts Options) ([]Pro
 	return result, warnings
 }
 
+// readCommonGitDir resolves standard .git directories and linked worktree
+// files without spawning Git. Unusual layouts fall back to rev-parse above.
+func readCommonGitDir(repoPath string) (string, error) {
+	marker := filepath.Join(repoPath, ".git")
+	info, err := os.Stat(marker)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		if _, err := os.Stat(filepath.Join(marker, "HEAD")); err != nil {
+			return "", err
+		}
+		return filepath.Abs(marker)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("unsupported .git marker")
+	}
+	content, err := readSmallGitFile(marker)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(content, "gitdir:") {
+		return "", fmt.Errorf("invalid .git file")
+	}
+	gitDir := strings.TrimSpace(strings.TrimPrefix(content, "gitdir:"))
+	if gitDir == "" {
+		return "", fmt.Errorf("empty gitdir in .git file")
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(repoPath, gitDir)
+	}
+	gitDir, err = filepath.Abs(gitDir)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(gitDir, "HEAD")); err != nil {
+		return "", err
+	}
+	common, err := readSmallGitFile(filepath.Join(gitDir, "commondir"))
+	if errors.Is(err, os.ErrNotExist) {
+		return gitDir, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if common == "" {
+		return "", fmt.Errorf("empty worktree commondir")
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitDir, common)
+	}
+	return filepath.Abs(common)
+}
+
+func readSmallGitFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > 4096 {
+		return "", fmt.Errorf("Git marker exceeds 4096 bytes")
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func collectGroup(ctx context.Context, repos []*index.Repo, opts Options) Project {
 	first := repos[0]
 	p := Project{Name: first.Name, Language: first.PrimaryLanguage, SourcePath: first.AbsPath, Commits: []Commit{}, Worktrees: []Worktree{}}
 	rootSet := map[string]bool{}
 	refs := []string{"--branches", "HEAD"}
-	for _, repo := range repos {
+	for i, repo := range repos {
 		p.Paths = append(p.Paths, repo.AbsPath)
 		rootSet[repo.Root] = true
-		if head, err := git(ctx, repo.AbsPath, 3*time.Second, 128, "rev-parse", "HEAD"); err == nil {
-			refs = append(refs, strings.TrimSpace(string(head)))
+		if i > 0 {
+			if head, err := git(ctx, repo.AbsPath, 3*time.Second, 128, "rev-parse", "HEAD"); err == nil {
+				refs = append(refs, strings.TrimSpace(string(head)))
+			}
 		}
 		changes, err := currentChanges(ctx, repo.AbsPath)
 		if err != nil {

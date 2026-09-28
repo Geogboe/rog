@@ -145,12 +145,18 @@ func runReport(cmd *cobra.Command, args []string) error {
 	tracker := newReportProgress(progressMode)
 	defer tracker.Close()
 	if len(local) > 0 {
-		tracker.Phase("Local Git", len(local))
+		tracker.Phase("Grouping local Git", len(local))
+	}
+	grouping := func(done, total int) {
+		tracker.Advance(done, total, "")
+		if done == total {
+			tracker.Phase("Local Git", total)
+		}
 	}
 	progress := func(done, total int, recent string) {
 		tracker.Advance(done, total, recent)
 	}
-	projects, warnings := report.CollectLocal(ctx, local, report.Options{Since: since, Until: until, AuthorEmails: emails, IncludePatches: reportLLM && cfg.LLM != nil, OnProgress: progress})
+	projects, warnings := report.CollectLocal(ctx, local, report.Options{Since: since, Until: until, AuthorEmails: emails, IncludePatches: reportLLM && cfg.LLM != nil, OnGrouping: grouping, OnProgress: progress})
 	d.Projects = append(d.Projects, projects...)
 	d.Warnings = append(d.Warnings, warnings...)
 	for distro, repos := range wslRepos {

@@ -128,6 +128,11 @@ func TestCollectAllLocalBranchesAndWorktrees(t *testing.T) {
 	runGit(t, base, "add", ".")
 	runGit(t, base, "commit", "-m", "start")
 	runGit(t, base, "worktree", "add", "-b", "feature", wt)
+	baseCommon, baseErr := readCommonGitDir(base)
+	worktreeCommon, worktreeErr := readCommonGitDir(wt)
+	if baseErr != nil || worktreeErr != nil || baseCommon != worktreeCommon {
+		t.Fatalf("native worktree grouping failed: base=%q (%v), worktree=%q (%v)", baseCommon, baseErr, worktreeCommon, worktreeErr)
+	}
 	if err := os.WriteFile(filepath.Join(wt, "unicode ü.txt"), []byte("feature\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +143,16 @@ func TestCollectAllLocalBranchesAndWorktrees(t *testing.T) {
 	}
 	now := time.Now()
 	start := now.Add(-time.Hour)
-	projects, warnings := CollectLocal(context.Background(), []*index.Repo{{Name: "project", Root: "dev", AbsPath: base}, {Name: "feature worktree", Root: "dev", AbsPath: wt}}, Options{Since: start, Until: now.Add(time.Hour)})
+	grouped := 0
+	projects, warnings := CollectLocal(context.Background(), []*index.Repo{{Name: "project", Root: "dev", AbsPath: base}, {Name: "feature worktree", Root: "dev", AbsPath: wt}}, Options{Since: start, Until: now.Add(time.Hour), OnGrouping: func(done, total int) {
+		if total != 2 {
+			t.Errorf("grouping total=%d", total)
+		}
+		grouped = done
+	}})
+	if grouped != 2 {
+		t.Fatalf("grouping progress ended at %d", grouped)
+	}
 	if len(warnings) > 0 {
 		t.Fatalf("warnings: %v", warnings)
 	}
