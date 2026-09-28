@@ -160,7 +160,7 @@ for structured output, or `-o path` for one absolute path per line.
 
 ### `rog select` / `rog sel`
 
-Interactively select a repository with rog's built-in picker. It shows name, root/path, language, status, and details. Type to filter; use arrows or Page Up/Down to move, Enter to select, and Escape or Ctrl+C to cancel. The picker writes only the chosen path to stdout and draws on the terminal, so command substitution works. If multiple results require a picker but no terminal is available, rog prints an actionable error.
+Interactively select a repository with rog's built-in picker. It shows name, root/path, language, status, and details. The active row, matching letters, and Git status use restrained color on supported terminals; `NO_COLOR` disables it. Keyboard hints shorten in narrow terminals. Type to filter; use arrows or Page Up/Down to move, Enter to select, and Escape or Ctrl+C to cancel. The picker writes only the chosen path to stdout and draws on the terminal, so command substitution works. If multiple results require a picker but no terminal is available, rog prints an actionable error.
 
 ```bash
 # Select from all repos
@@ -179,6 +179,8 @@ code "$(rog select api)"
 ### `rog info`
 
 Show detailed information about a repository.
+
+In a supported terminal, labels are muted and the repository name and Git status are colored. Redirected output and `NO_COLOR` output stay plain.
 
 ```bash
 # By name

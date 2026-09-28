@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestPickerFilteringAndSelection(t *testing.T) {
@@ -66,5 +67,29 @@ func TestPickerDetailsFollowShortResultList(t *testing.T) {
 	lines := strings.Split(m.View(), "\n")
 	if len(lines) != 9 || lines[6] != "/one/service" {
 		t.Fatalf("picker left blank space before details: %q", m.View())
+	}
+}
+
+func TestPickerColorAndPlainViews(t *testing.T) {
+	m := newModel([]Item{{ID: "/one/rog", Name: "rog", Root: "one", Path: "/one/rog", Status: "dirty"}})
+	m.query = []rune("ro")
+	m.refilter()
+	m.width = 40
+	plain := m.View()
+	if strings.Contains(plain, "\x1b[") {
+		t.Fatalf("plain view contains ANSI escapes: %q", plain)
+	}
+	m.color = true
+	colored := m.View()
+	if !strings.Contains(colored, "\x1b[1;35m") || !strings.Contains(colored, "\x1b[33mdirty") {
+		t.Fatalf("colored view lacks match or status color: %q", colored)
+	}
+	if ansi.Strip(colored) != plain {
+		t.Fatalf("color changed visible content:\nplain: %q\ncolor: %q", plain, ansi.Strip(colored))
+	}
+	for _, line := range strings.Split(colored, "\n") {
+		if ansi.StringWidth(line) > m.width {
+			t.Fatalf("line exceeds width %d: %q", m.width, line)
+		}
 	}
 }

@@ -29,6 +29,7 @@ type model struct {
 	query                         []rune
 	cursor, offset, width, height int
 	chosen                        string
+	color                         bool
 }
 
 func newModel(items []Item) model {
@@ -184,7 +185,7 @@ func scoreSubsequence(needle, haystack string) (int, bool) {
 
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 32 || r == 127 {
+		if r < 32 || r == 127 || r == '\u009b' {
 			return -1
 		}
 		return r
@@ -200,31 +201,58 @@ func clip(s string, width int) string {
 
 func (m model) View() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Find repository  %d/%d\n", len(m.matches), len(m.items))
-	fmt.Fprintf(&b, "> %s\n", clip(string(m.query), m.width-3))
-	b.WriteString(strings.Repeat("─", max(1, min(m.width, 80))) + "\n")
+	heading := fmt.Sprintf("Find repository  %d/%d", len(m.matches), len(m.items))
+	b.WriteString(m.paint("1;36", clip(heading, m.width)) + "\n")
+	fmt.Fprintf(&b, "%s %s\n", m.paint("36", ">"), clip(string(m.query), m.width-3))
+	b.WriteString(m.paint("2", strings.Repeat("─", max(1, min(m.width, 80)))) + "\n")
 	end := min(len(m.matches), m.offset+m.rows())
 	for i := m.offset; i < end; i++ {
 		entry := m.matches[i].item
 		indicator := "  "
 		if i == m.cursor {
-			indicator = "❯ "
+			indicator = m.paint("1;36", "❯") + " "
 		}
-		name := highlight(clean(entry.Name), string(m.query))
-		label := fmt.Sprintf("%s%s  [%s]  %s  %s", indicator, name, clean(entry.Root), clean(entry.Language), clean(entry.Status))
+		name := highlight(clean(entry.Name), string(m.query), m.color)
+		if i == m.cursor && m.color {
+			name = m.paint("1;36", name)
+		} else if m.color {
+			name = m.paint("36", name)
+		}
+		status := clean(entry.Status)
+		switch status {
+		case "dirty":
+			status = m.paint("33", status)
+		case "status unavailable":
+			status = m.paint("31", status)
+		}
+		label := fmt.Sprintf("%s%s  %s  %s  %s", indicator, name, m.paint("2", "["+clean(entry.Root)+"]"), m.paint("2", clean(entry.Language)), status)
 		label = ansi.Truncate(label, m.width, "…")
 		b.WriteString(label + "\n")
 	}
-	b.WriteString(strings.Repeat("─", max(1, min(m.width, 80))) + "\n")
+	b.WriteString(m.paint("2", strings.Repeat("─", max(1, min(m.width, 80)))) + "\n")
 	if len(m.matches) > 0 {
 		selected := m.matches[m.cursor].item
-		b.WriteString(clip(selected.Path, m.width) + "\n")
-		b.WriteString(clip(selected.Description, m.width) + "\n")
+		b.WriteString(m.paint("36", clip(selected.Path, m.width)) + "\n")
+		b.WriteString(m.paint("2", clip(selected.Description, m.width)) + "\n")
 	} else {
-		b.WriteString("No matching repositories\n\n")
+		b.WriteString(m.paint("33", "No matching repositories") + "\n\n")
 	}
-	b.WriteString("↑/↓ move  PgUp/PgDn page  Enter select  Esc cancel")
+	hints := "↑/↓ move  PgUp/PgDn page  Enter select  Esc cancel"
+	if m.width < 55 {
+		hints = "↑/↓ move  Enter select  Esc cancel"
+	}
+	if m.width < 35 {
+		hints = "Enter select  Esc cancel"
+	}
+	b.WriteString(m.paint("2", clip(hints, m.width)))
 	return b.String()
+}
+
+func (m model) paint(code, value string) string {
+	if !m.color || value == "" {
+		return value
+	}
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
 }
 
 // Run draws on the controlling terminal and returns the selected repository ID.
@@ -240,12 +268,27 @@ func Run(items []Item) (string, error) {
 	if output != input && output != os.Stderr {
 		defer output.Close()
 	}
-	program := tea.NewProgram(newModel(items), tea.WithInput(input), tea.WithOutput(output), tea.WithAltScreen())
+	m := newModel(items)
+	m.color = supportsColor()
+	program := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output), tea.WithAltScreen())
 	result, err := program.Run()
 	if err != nil {
 		return "", err
 	}
 	return result.(model).chosen, nil
+}
+
+func supportsColor() bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	termName := strings.ToLower(os.Getenv("TERM"))
+	if runtime.GOOS != "windows" {
+		return termName != "" && termName != "dumb"
+	}
+	return os.Getenv("WT_SESSION") != "" || os.Getenv("ANSICON") != "" ||
+		strings.EqualFold(os.Getenv("ConEmuANSI"), "ON") ||
+		strings.Contains(termName, "xterm") || strings.Contains(termName, "ansi")
 }
 
 func terminal() (*os.File, *os.File, error) {
@@ -263,9 +306,9 @@ func terminal() (*os.File, *os.File, error) {
 }
 
 // highlight marks the first query word's subsequence inside the repository name.
-func highlight(name, query string) string {
+func highlight(name, query string, color bool) string {
 	words := strings.Fields(query)
-	if len(words) == 0 {
+	if len(words) == 0 || !color {
 		return name
 	}
 	target := []rune(strings.ToLower(words[0]))
@@ -278,7 +321,7 @@ func highlight(name, query string) string {
 		if at < len(target) && unicode.ToLower(r) == target[at] {
 			b.WriteString("\x1b[1;35m")
 			b.WriteRune(r)
-			b.WriteString("\x1b[0m")
+			b.WriteString("\x1b[36m")
 			at++
 		} else {
 			b.WriteRune(r)

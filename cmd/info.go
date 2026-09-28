@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -56,53 +58,76 @@ func runInfo(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Display detailed info
-	fmt.Printf("Name:        %s\n", repo.Name)
-	if repo.Description != "" {
-		fmt.Printf("Description: %s\n", repo.Description)
-	}
-	fmt.Println()
+	writeInfo(os.Stdout, repo, isInteractiveTerminal(os.Stdout) && supportsANSIColor())
+}
 
-	fmt.Printf("Path:        %s\n", repo.AbsPath)
-	fmt.Printf("Root:        %s\n", repo.Root)
-	if repo.RelPath != "" {
-		fmt.Printf("Relative:    %s\n", repo.RelPath)
+func writeInfo(out io.Writer, repo *index.Repo, color bool) {
+	label := func(name string) string {
+		if color {
+			return "\x1b[2m" + name + "\x1b[0m"
+		}
+		return name
 	}
-	fmt.Println()
+	value := func(text string) string { return cleanTableCell(text) }
+	name := value(repo.Name)
+	if color {
+		name = "\x1b[1;36m" + name + "\x1b[0m"
+	}
+	fmt.Fprintf(out, "%s        %s\n", label("Name:"), name)
+	if repo.Description != "" {
+		fmt.Fprintf(out, "%s %s\n", label("Description:"), value(repo.Description))
+	}
+	fmt.Fprintln(out)
+
+	fmt.Fprintf(out, "%s        %s\n", label("Path:"), value(repo.AbsPath))
+	fmt.Fprintf(out, "%s        %s\n", label("Root:"), value(repo.Root))
+	if repo.RelPath != "" {
+		fmt.Fprintf(out, "%s    %s\n", label("Relative:"), value(repo.RelPath))
+	}
+	fmt.Fprintln(out)
 
 	if repo.RemoteURL != "" {
-		fmt.Printf("Remote:      %s\n", repo.RemoteURL)
-		fmt.Printf("Host:        %s\n", repo.Host)
-		fmt.Println()
+		fmt.Fprintf(out, "%s      %s\n", label("Remote:"), value(repo.RemoteURL))
+		fmt.Fprintf(out, "%s        %s\n", label("Host:"), value(repo.Host))
+		fmt.Fprintln(out)
 	}
 
 	if repo.CurrentBranch != "" {
 		status := formatDetailedStatus(repo)
-		fmt.Printf("Branch:      %s (%s)\n", repo.CurrentBranch, status)
+		if color {
+			code := "32"
+			if repo.StatusUnavailable {
+				code = "31"
+			} else if repo.IsDirty || repo.HasUntracked || repo.Behind > 0 {
+				code = "33"
+			}
+			status = "\x1b[" + code + "m" + status + "\x1b[0m"
+		}
+		fmt.Fprintf(out, "%s      %s (%s)\n", label("Branch:"), value(repo.CurrentBranch), status)
 	}
 
 	if !repo.LastCommitTime.IsZero() {
-		fmt.Printf("Last commit: %s by %s\n",
+		fmt.Fprintf(out, "%s %s by %s\n", label("Last commit:"),
 			repo.LastCommitTime.Format("2006-01-02 15:04"),
-			repo.LastCommitAuthor)
+			value(repo.LastCommitAuthor))
 		if repo.LastCommitHash != "" {
-			fmt.Printf("             %s\n", repo.LastCommitHash[:8])
+			fmt.Fprintf(out, "             %s\n", value(repo.LastCommitHash[:min(8, len(repo.LastCommitHash))]))
 		}
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
 	if repo.PrimaryLanguage != "" {
-		fmt.Printf("Language:    %s\n", repo.PrimaryLanguage)
+		fmt.Fprintf(out, "%s    %s\n", label("Language:"), value(repo.PrimaryLanguage))
 	}
 	if len(repo.Tags) > 0 {
-		fmt.Printf("Tags:        %s\n", strings.Join(repo.Tags, ", "))
+		fmt.Fprintf(out, "%s        %s\n", label("Tags:"), value(strings.Join(repo.Tags, ", ")))
 	}
-	fmt.Println()
+	fmt.Fprintln(out)
 
-	fmt.Printf("First seen:      %s\n", repo.FirstSeenAt.Format("2006-01-02 15:04"))
-	fmt.Printf("Last scan:       %s\n", repo.LastScanAt.Format("2006-01-02 15:04"))
+	fmt.Fprintf(out, "%s      %s\n", label("First seen:"), repo.FirstSeenAt.Format("2006-01-02 15:04"))
+	fmt.Fprintf(out, "%s       %s\n", label("Last scan:"), repo.LastScanAt.Format("2006-01-02 15:04"))
 	if !repo.LastGitCheckAt.IsZero() {
-		fmt.Printf("Last git check:  %s\n", repo.LastGitCheckAt.Format("2006-01-02 15:04"))
+		fmt.Fprintf(out, "%s  %s\n", label("Last git check:"), repo.LastGitCheckAt.Format("2006-01-02 15:04"))
 	}
 }
 
