@@ -54,6 +54,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		key := msg.String()
 		if m.confirm {
 			m.confirm = false
+			if key == "ctrl+c" {
+				m.cancelled = true
+				return m, tea.Quit
+			}
 			if key == "y" || key == "Y" {
 				m.busy = true
 				m.status = "Generating AI Summary..."
@@ -280,6 +284,9 @@ func Run(ctx context.Context, d report.Document, provider string, generate func(
 	m := model{doc: d, width: 80, height: 24, provider: provider, generate: generate, ctx: ctx, color: os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"}
 	result, err := tea.NewProgram(m, tea.WithInput(input), tea.WithOutput(output), tea.WithAltScreen()).Run()
 	if err != nil {
+		if ctx.Err() != nil {
+			return d, ErrCancelled
+		}
 		return d, err
 	}
 	final := result.(model)
