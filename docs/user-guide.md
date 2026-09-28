@@ -141,19 +141,22 @@ rog list --limit 10
 rog list --long
 
 # Machine-readable output
-rog list --format json
-rog list --format yaml
+rog list --output json
+rog list -o yaml
+rog list -o path
 ```
 
 **Output columns:**
 - **NAME**: Repository name
 - **LANG**: Primary language
-- **HOST**: Git host (github.com, etc.)
 - **BRANCH**: Current branch
-- **STATUS**: Remote status + local status
-- **LAST COMMIT**: Time since last commit
-- **ROOT**: Which root it belongs to
-- **PATH**: Relative path within root
+- **STATUS**: Local Git state and ahead/behind counts
+- **PATH**: Root and relative path
+
+The default table uses color on supported terminals. `NO_COLOR` disables it, and
+redirected output has no color codes. Narrow terminals show fewer columns;
+`--long` and `--fields` expose the full field set. Use `-o json` or `-o yaml`
+for structured output, or `-o path` for one absolute path per line.
 
 ### `rog select` / `rog sel`
 
@@ -603,26 +606,26 @@ rog list --behind
 
 ```bash
 # Get all dirty repos as JSON
-rog list --dirty --format json | jq '.[] | .abs_path'
+rog list --dirty --output json | jq '.[] | .abs_path'
 
 # Get repos by language
-rog list --lang python --format json | jq '.[] | .name'
+rog list --lang python --output json | jq '.[] | .name'
 
 # Export all metadata
-rog list --format yaml > repos.yaml
+rog list --output yaml > repos.yaml
 ```
 
 ### Batch Operations
 
 ```bash
 # Pull all repos
-rog list --format json | jq -r '.[] | .abs_path' | while read repo; do
+rog list --output json | jq -r '.[] | .abs_path' | while read repo; do
   echo "Pulling $repo"
   git -C "$repo" pull
 done
 
 # Check status of all dirty repos
-for repo in $(rog list --dirty --format json | jq -r '.[] | .abs_path'); do
+for repo in $(rog list --dirty --output json | jq -r '.[] | .abs_path'); do
   echo "=== $repo ==="
   git -C "$repo" status
 done

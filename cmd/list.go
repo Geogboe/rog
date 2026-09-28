@@ -8,6 +8,9 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
+
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
@@ -29,9 +32,7 @@ var (
 	listLimit  int
 	listLong   bool
 	listShort  bool
-	listFormat string
-	listJSON   bool
-	listYAML   bool
+	listOutput string
 	listFields string
 )
 
@@ -51,11 +52,10 @@ Filters are applied using flags for exact matches.
 
 Output modes:
   --short: Minimal output (name, language, path)
-  (default): Standard output (name, lang, host, branch, status, commit, root, path)
+  (default): Compact table (name, lang, branch, status, path)
   --long: Detailed output (adds author, remote URL)
   --fields: Custom fields (comma-separated)
-  --json: JSON output (alias for --format json)
-  --yaml: YAML output (alias for --format yaml)
+  --output, -o: table, json, yaml, or path
 
 Available fields:
   name, lang, host, branch, status, commit, author, root, path, remote, tags, description
@@ -67,7 +67,7 @@ Examples:
   rog list --dirty                   # Repos with uncommitted changes
   rog list --short                   # Minimal output
   rog list --fields name,lang,branch # Custom fields
-  rog list --json                    # JSON format
+  rog list -o json                   # JSON format
   rog list --sort last-commit --limit 10  # 10 most recently committed`,
 	Run:     runList,
 	Aliases: []string{"ls"},
@@ -89,9 +89,7 @@ func init() {
 	listCmd.Flags().BoolVarP(&listLong, "long", "l", false, "Show detailed information")
 	listCmd.Flags().BoolVarP(&listShort, "short", "s", false, "Show minimal information")
 	listCmd.Flags().StringVar(&listFields, "fields", "", "Custom fields to display (comma-separated)")
-	listCmd.Flags().StringVar(&listFormat, "format", "table", "Output format: table, json, yaml")
-	listCmd.Flags().BoolVar(&listJSON, "json", false, "Output in JSON format (alias for --format json)")
-	listCmd.Flags().BoolVar(&listYAML, "yaml", false, "Output in YAML format (alias for --format yaml)")
+	listCmd.Flags().StringVarP(&listOutput, "output", "o", "table", "Output format: table, json, yaml, path")
 }
 
 func runList(cmd *cobra.Command, args []string) {
@@ -103,15 +101,8 @@ func runList(cmd *cobra.Command, args []string) {
 		exitWithError("Cannot use --fields with --short or --long")
 	}
 
-	// Handle format aliases
-	if listJSON {
-		listFormat = "json"
-	}
-	if listYAML {
-		listFormat = "yaml"
-	}
-	if listJSON && listYAML {
-		exitWithError("Cannot use --json and --yaml together")
+	if listOutput != "table" && listOutput != "json" && listOutput != "yaml" && listOutput != "path" {
+		exitWithError("Invalid output %q (valid: table, json, yaml, path)", listOutput)
 	}
 
 	// Determine which fields to display
@@ -134,7 +125,11 @@ func runList(cmd *cobra.Command, args []string) {
 	}
 
 	if idx.Count() == 0 {
-		fmt.Println("No repositories found. Run 'rog scan' first.")
+		if listOutput == "table" {
+			fmt.Println("No repositories found. Run 'rog scan' first.")
+		} else {
+			outputListResults([]*index.Repo{}, fields)
+		}
 		return
 	}
 
@@ -173,16 +168,27 @@ func runList(cmd *cobra.Command, args []string) {
 	results := query.Query(idx, filter)
 
 	if len(results) == 0 {
-		fmt.Println("No repositories match the criteria.")
+		if listOutput == "table" {
+			fmt.Println("No repositories match the criteria.")
+		} else {
+			outputListResults([]*index.Repo{}, fields)
+		}
 		return
 	}
 
-	// Output results
-	switch listFormat {
+	outputListResults(results, fields)
+}
+
+func outputListResults(results []*index.Repo, fields []string) {
+	switch listOutput {
 	case "json":
 		outputJSON(results)
 	case "yaml":
 		outputYAML(results)
+	case "path":
+		for _, repo := range results {
+			fmt.Println(repo.AbsPath)
+		}
 	default:
 		outputTable(results, listShort, listLong, fields)
 	}
@@ -240,7 +246,13 @@ func parseFields(fieldsStr string) []string {
 }
 
 func outputTable(repos []*index.Repo, short bool, long bool, customFields []string) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.StripEscape)
+	interactive := isInteractiveTerminal(os.Stdout)
+	color := interactive && supportsANSIColor()
+	width := 0
+	if interactive {
+		width, _, _ = term.GetSize(os.Stdout.Fd())
+	}
 
 	// Determine which fields to display
 	var fields []string
@@ -255,7 +267,13 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 		fields = []string{"name", "lang", "host", "branch", "status", "commit", "author", "description", "root", "path", "remote"}
 		descMaxLen = 80 // Long mode: 80 chars for description
 	} else {
-		fields = []string{"name", "lang", "host", "branch", "status", "commit", "root", "path"}
+		fields = []string{"name", "lang", "branch", "status", "path"}
+		if width > 0 && width < 90 {
+			fields = []string{"name", "status", "path"}
+		}
+		if width > 0 && width < 50 {
+			fields = []string{"name", "path"}
+		}
 		descMaxLen = 0 // Normal mode: no description
 	}
 
@@ -299,13 +317,108 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 	for _, repo := range repos {
 		values := make([]string, len(fields))
 		for i, field := range fields {
-			values[i] = getFieldValue(repo, field, hasRoot, descMaxLen)
+			value := getFieldValue(repo, field, hasRoot, descMaxLen)
+			if len(customFields) == 0 && !short && !long && field == "status" {
+				value = formatCompactStatus(repo)
+			}
+			value = cleanTableCell(value)
+			if width > 0 && len(customFields) == 0 && !short && !long {
+				value = truncateTableCell(value, field, width, len(fields))
+			}
+			if color {
+				value = colorTableCell(value, field, repo)
+			}
+			values[i] = value
 		}
 		fmt.Fprintln(w, strings.Join(values, "\t"))
 	}
 
 	w.Flush()
 	fmt.Printf("\nTotal: %d repositories\n", len(repos))
+}
+
+func formatCompactStatus(repo *index.Repo) string {
+	status := "clean"
+	if repo.StatusUnavailable {
+		status = "unknown"
+	} else if repo.IsDirty {
+		status = "dirty"
+	} else if repo.HasUntracked {
+		status = "untracked"
+	}
+	if repo.Ahead > 0 {
+		status += fmt.Sprintf(" ↑%d", repo.Ahead)
+	}
+	if repo.Behind > 0 {
+		status += fmt.Sprintf(" ↓%d", repo.Behind)
+	}
+	return status
+}
+
+func cleanTableCell(value string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 32 || r == 127 || r == '\u009b' {
+			return ' '
+		}
+		return r
+	}, value)
+}
+
+func truncateTableCell(value, field string, width, columns int) string {
+	limit := 0
+	if columns == 2 {
+		switch field {
+		case "name":
+			limit = width / 3
+		case "path":
+			limit = width - width/3 - 4
+		}
+	} else if columns == 3 {
+		switch field {
+		case "name":
+			limit = 20
+		case "status":
+			limit = 18
+		case "path":
+			limit = width - 44
+		}
+	} else {
+		switch field {
+		case "name":
+			limit = 20
+		case "lang":
+			limit = 10
+		case "branch":
+			limit = 16
+		case "status":
+			limit = 18
+		case "path":
+			limit = width - 74
+		}
+	}
+	if limit < 8 {
+		limit = 8
+	}
+	return ansi.Truncate(value, limit, "…")
+}
+
+// Tabwriter escape delimiters keep ANSI sequences out of column width calculations.
+func colorTableCell(value, field string, repo *index.Repo) string {
+	code := ""
+	switch field {
+	case "name":
+		code = "36"
+	case "status":
+		if repo.StatusUnavailable {
+			code = "31"
+		} else if repo.IsDirty || repo.HasUntracked || repo.Behind > 0 {
+			code = "33"
+		}
+	}
+	if code == "" {
+		return value
+	}
+	return "\xff\x1b[" + code + "m\xff" + value + "\xff\x1b[0m\xff"
 }
 
 // getFieldValue returns the value for a specific field from a repo

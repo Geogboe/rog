@@ -148,8 +148,9 @@ rog list --tag cli --tag rest
 rog list --sort last-commit --limit 10
 
 # Machine-readable output
-rog list --format json
-rog list --format yaml
+rog list --output json
+rog list -o yaml
+rog list -o path
 ```
 
 ### Remote Status
@@ -324,12 +325,12 @@ alias rr='rog list --sort last-commit --limit 10'
 
 ```bash
 # Pull all repos
-rog list --format json | jq -r '.[] | .abs_path' | while read repo; do
+rog list --output json | jq -r '.[] | .abs_path' | while read repo; do
   git -C "$repo" pull
 done
 
 # Check status of dirty repos
-for repo in $(rog list --dirty --format json | jq -r '.[] | .abs_path'); do
+for repo in $(rog list --dirty --output json | jq -r '.[] | .abs_path'); do
   echo "=== $repo ==="
   git -C "$repo" status
 done

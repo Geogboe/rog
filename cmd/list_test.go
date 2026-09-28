@@ -2,13 +2,16 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/tabwriter"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -117,26 +120,60 @@ func TestOutputTableNormal(t *testing.T) {
 	// Verify normal format headers
 	assert.Contains(t, output, "NAME")
 	assert.Contains(t, output, "LANG")
-	assert.Contains(t, output, "HOST")
 	assert.Contains(t, output, "BRANCH")
 	assert.Contains(t, output, "STATUS")
-	assert.Contains(t, output, "LAST COMMIT")
-	assert.Contains(t, output, "ROOT")
 	assert.Contains(t, output, "PATH")
 
 	// Should NOT contain long-format-only fields
 	assert.NotContains(t, output, "AUTHOR")
 	assert.NotContains(t, output, "REMOTE")
+	assert.NotContains(t, output, "HOST")
+	assert.NotContains(t, output, "LAST COMMIT")
+	assert.NotContains(t, output, "ROOT")
 
 	// Should contain repo data
 	assert.Contains(t, output, "test-repo-1")
-	assert.Contains(t, output, "github.com")
 	assert.Contains(t, output, "main")
 
 	assert.Contains(t, output, "test-repo-2")
-	assert.Contains(t, output, "gitlab.com")
 	assert.Contains(t, output, "develop")
 	assert.Contains(t, output, "dirty")
+}
+
+func TestListOutputFlags(t *testing.T) {
+	flag := listCmd.Flags().Lookup("output")
+	require.NotNil(t, flag)
+	assert.Equal(t, "o", flag.Shorthand)
+	assert.Equal(t, "table", flag.DefValue)
+	for _, removed := range []string{"format", "json", "yaml"} {
+		assert.Nil(t, listCmd.Flags().Lookup(removed))
+	}
+}
+
+func TestListPathOutput(t *testing.T) {
+	previous := listOutput
+	listOutput = "path"
+	t.Cleanup(func() { listOutput = previous })
+	repos := createTestIndexForCmd().List()
+	output := captureOutput(func() { outputListResults(repos, nil) })
+	assert.Equal(t, "/tmp/test-repo-1\n/tmp/test-repo-2\n", output)
+	assert.Empty(t, captureOutput(func() { outputListResults([]*index.Repo{}, nil) }))
+}
+
+func TestCompactTableCells(t *testing.T) {
+	assert.Equal(t, "dirty ↑2 ↓1", formatCompactStatus(&index.Repo{IsDirty: true, Ahead: 2, Behind: 1}))
+	assert.Equal(t, "unknown", formatCompactStatus(&index.Repo{StatusUnavailable: true}))
+	assert.Equal(t, "x y z", cleanTableCell("x\ty\x1bz"))
+	assert.LessOrEqual(t, ansi.StringWidth(truncateTableCell(strings.Repeat("界", 20), "name", 80, 3)), 20)
+}
+
+func TestColoredTableCellHasNoWriterMarkers(t *testing.T) {
+	var buf bytes.Buffer
+	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', tabwriter.StripEscape)
+	_, err := fmt.Fprintln(w, colorTableCell("repo", "name", &index.Repo{}))
+	require.NoError(t, err)
+	require.NoError(t, w.Flush())
+	assert.Equal(t, "\x1b[36mrepo\x1b[0m\n", buf.String())
 }
 
 func TestOutputTableLong(t *testing.T) {

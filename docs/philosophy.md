@@ -106,24 +106,24 @@ rog scan --llm       # Call LLM API
 **Examples**:
 ```bash
 # Pipe to other tools
-rog list --format=json | jq '.[] | select(.language == "Go")'
+rog list --output=json | jq '.[] | select(.primary_language == "Go")'
 
 # Select interactively
 cd "$(rog select)"
 
 # Combine with git
-rog list --dirty | while read repo; do
-  git -C $repo status
+rog list --dirty --output=path | while IFS= read -r repo; do
+  git -C "$repo" status
 done
 
 # Integrate into scripts
-for repo in $(rog list --lang=python --format=path); do
+for repo in $(rog list --lang=python --output=path); do
   pytest $repo/tests
 done
 ```
 
 **Implementation**:
-- `--format` flag for structured output (json, csv, plain)
+- `--output` flag for table, JSON, YAML, or path output
 - Exit codes follow conventions (0 = success, 1 = error)
 - Respects `EDITOR` environment variable
 - Works with standard input/output
