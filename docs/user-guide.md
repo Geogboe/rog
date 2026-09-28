@@ -199,7 +199,7 @@ AI Summary is opt-in (`--llm` or the terminal Generate action). Rog sends bounde
 commit metadata and selected committed patch hunks to the configured endpoint;
 uncommitted patch text is never sent. Sensitive paths and recognizable secret
 lines are excluded, but review the endpoint and privacy implications before
-using a remote provider. The request has a 24 KiB evidence cap, a 1,200-token
+using a remote provider. The request has a 96 KiB evidence cap, a 1,200-token
 output cap, and a 45-second deadline. Optional `report.input_usd_per_million`
 and `report.output_usd_per_million` config values show a rough cost estimate,
 not a billing guarantee. A failed AI request leaves the factual report usable.

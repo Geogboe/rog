@@ -15,7 +15,7 @@ import (
 	"github.com/Geogboe/rog/internal/config"
 )
 
-const MaxAIContextBytes = 24 << 10
+const MaxAIContextBytes = 96 << 10
 const MaxAIOutputTokens = 1200
 const AITimeout = 45 * time.Second
 
@@ -74,32 +74,38 @@ func PatchExcerpts(ctx context.Context, p Project, maxBytes int) []string {
 func Evidence(d Document) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Period: %s to %s (%s). Projects: %d.\n", d.Since.Format(time.RFC3339), d.Until.Format(time.RFC3339), d.Timezone, len(d.Projects))
-	metricBudget := MaxAIContextBytes / 2
-	included := make([]bool, len(d.Projects))
-	inactive, omittedMetrics := 0, 0
-	for i, p := range d.Projects {
+	inactive := 0
+	for _, p := range d.Projects {
 		if p.Metrics.Commits == 0 && p.Metrics.CurrentChangedPaths == 0 {
 			inactive++
-			continue
 		}
-		line := fmt.Sprintf("Project %s; language %s; active days %d; commits %d; changed paths %d; +%d/-%d lines; activity span %s (not hours); current changed paths %d.\n", clean(p.Name), clean(p.Language), p.Metrics.ActiveDays, p.Metrics.Commits, p.Metrics.ChangedPaths, p.Metrics.Additions, p.Metrics.Deletions, activitySpan(p.Metrics), p.Metrics.CurrentChangedPaths)
-		if b.Len()+len(line) > metricBudget {
-			omittedMetrics++
-			continue
-		}
+		line := fmt.Sprintf("Project %s | lang=%s days=%d commits=%d paths=%d +%d/-%d span=%s current=%d\n", clean(p.Name), clean(p.Language), p.Metrics.ActiveDays, p.Metrics.Commits, p.Metrics.ChangedPaths, p.Metrics.Additions, p.Metrics.Deletions, activitySpan(p.Metrics), p.Metrics.CurrentChangedPaths)
 		b.WriteString(line)
-		included[i] = true
 	}
-	fmt.Fprintf(&b, "Inactive projects: %d. Active projects omitted from detail budget: %d.\n", inactive, omittedMetrics)
+	fmt.Fprintf(&b, "Inactive projects: %d.\n", inactive)
 	remaining := MaxAIContextBytes - b.Len() - 200
 	if remaining < 0 {
 		remaining = 0
 	}
 	omitted := 0
-	for projectIndex, p := range d.Projects {
-		if !included[projectIndex] {
-			continue
+	for _, p := range d.Projects {
+		for _, wt := range p.Worktrees {
+			for _, currentPath := range wt.ChangedPaths {
+				if sensitivePath(currentPath) {
+					omitted++
+					continue
+				}
+				line := fmt.Sprintf("Current edit in %s: %s (undated, author unknown)\n", clean(p.Name), clean(currentPath))
+				if len(line) > remaining {
+					omitted++
+					continue
+				}
+				b.WriteString(line)
+				remaining -= len(line)
+			}
 		}
+	}
+	for _, p := range d.Projects {
 		for i, c := range p.Commits {
 			if i >= 20 {
 				omitted++
@@ -134,7 +140,7 @@ func Evidence(d Document) string {
 		}
 	}
 	if omitted > 0 {
-		fmt.Fprintf(&b, "\nOmitted %d commit or patch excerpts due to the context budget.\n", omitted)
+		fmt.Fprintf(&b, "\nomitted %d sensitive or over-budget filenames, commits, or patch excerpts.\n", omitted)
 	}
 	return b.String()
 }

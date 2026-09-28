@@ -102,6 +102,14 @@ func TestSensitivePathsAndLines(t *testing.T) {
 	}
 }
 
+func TestAIEvidenceIncludesOnlySafeCurrentFilenames(t *testing.T) {
+	d := Document{Since: time.Now().Add(-time.Hour), Until: time.Now(), Projects: []Project{{Name: "demo", Metrics: Metrics{CurrentChangedPaths: 2}, Worktrees: []Worktree{{ChangedPaths: []string{"src/new.go", "config/.env.production"}}}}}}
+	evidence := Evidence(d)
+	if !strings.Contains(evidence, "src/new.go") || strings.Contains(evidence, ".env.production") || !strings.Contains(evidence, "omitted") {
+		t.Fatalf("current filenames were not filtered: %s", evidence)
+	}
+}
+
 func TestCollectAllLocalBranchesAndWorktrees(t *testing.T) {
 	root := t.TempDir()
 	base := filepath.Join(root, "project")
