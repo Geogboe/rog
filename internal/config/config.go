@@ -36,11 +36,13 @@ type Root struct {
 	Exclude   []string `yaml:"exclude,omitempty"`
 	WSL       bool     `yaml:"wsl,omitempty"`        // True if this root is in WSL
 	WSLDistro string   `yaml:"wsl_distro,omitempty"` // WSL distro name (e.g., "Ubuntu")
+	Windows   bool     `yaml:"windows,omitempty"`    // Windows root scanned through the Windows worker from WSL
 }
 
 // ScanConfig represents scan command configuration
 type ScanConfig struct {
-	Progress string `yaml:"progress,omitempty"`
+	Progress              string `yaml:"progress,omitempty"`
+	SuppressMountWarnings bool   `yaml:"suppress_mount_warnings,omitempty"`
 }
 
 // LLMConfig represents LLM configuration
@@ -95,6 +97,18 @@ func Load() (*Config, error) {
 
 // expandRootPath keeps WSL paths in Linux form when running on Windows.
 func expandRootPath(root Root, windows bool) (string, error) {
+	if root.Windows {
+		if windows {
+			return "", fmt.Errorf("windows: true is for WSL configs; Windows roots are native on Windows")
+		}
+		if root.WSL {
+			return "", fmt.Errorf("a root cannot be both windows and wsl")
+		}
+		if len(root.Path) < 3 || (root.Path[0] < 'A' || root.Path[0] > 'Z') && (root.Path[0] < 'a' || root.Path[0] > 'z') || root.Path[1] != ':' || (root.Path[2] != '\\' && root.Path[2] != '/') {
+			return "", fmt.Errorf("Windows root path must be drive-absolute: %s", root.Path)
+		}
+		return root.Path, nil
+	}
 	if windows && root.WSL {
 		if !path.IsAbs(root.Path) {
 			return "", fmt.Errorf("WSL path must be absolute: %s", root.Path)

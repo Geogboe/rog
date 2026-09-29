@@ -141,3 +141,16 @@ func TestExpandRootPathWSLOnWindows(t *testing.T) {
 	_, err = expandRootPath(Root{Path: "relative/projects", WSL: true}, true)
 	require.ErrorContains(t, err, "must be absolute")
 }
+
+func TestExpandWindowsRootInWSL(t *testing.T) {
+	got, err := expandRootPath(Root{Path: `C:\Users\me\projects`, Windows: true}, false)
+	if err != nil || got != `C:\Users\me\projects` {
+		t.Fatalf("path=%q, err=%v", got, err)
+	}
+	if _, err := expandRootPath(Root{Path: "/mnt/c/projects", Windows: true}, false); err == nil {
+		t.Fatal("accepted Linux path for Windows root")
+	}
+	if _, err := expandRootPath(Root{Path: `C:\projects`, Windows: true, WSL: true}, false); err == nil {
+		t.Fatal("accepted conflicting root types")
+	}
+}

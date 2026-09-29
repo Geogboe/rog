@@ -2,7 +2,7 @@
 
 ## Overview
 
-On Windows, rog scans and indexes repositories inside WSL distributions when a root has `wsl: true`.
+On Windows, rog scans WSL roots with a Linux worker when a root has `wsl: true`. In WSL, rog scans Windows roots through the installed Windows `rog.exe` when a root has `windows: true`. Both directions keep discovery and Git reads on the filesystem's owning OS.
 
 ## Configuration
 
@@ -21,6 +21,23 @@ roots:
     wsl_distro: Ubuntu  # Optional, defaults to default WSL distro
 ```
 
+In the WSL config, use native Windows paths for Windows roots:
+
+```yaml
+roots:
+  - name: projects
+    path: C:\Users\username\dev\projects
+    windows: true
+    max_depth: 5
+  - name: home
+    path: /home/username/dev-linux/projects
+    max_depth: 5
+```
+
+The installed `rog.exe` must be on WSL's `PATH`, and WSL interop must be enabled. WSL starts one short-lived `rog.exe __windows-worker` process per scan or report. The worker writes no index; WSL rog owns its index and shows `/mnt/c/...` paths for navigation. A failed or incompatible Windows worker makes a scan incomplete and retains the affected roots' previous entries. Install matching Linux and Windows rog versions before switching a mounted root to `windows: true`.
+
+If a configured Linux root would be walked through a DrvFs mount, `rog scan` prints a warning on stderr. Set `scan.suppress_mount_warnings: true` to hide only this warning. Bridged Windows roots do not produce it.
+
 ## Implementation Details
 
 ### Scanner worker and paths
@@ -35,7 +52,7 @@ The Root column shows the configured root name. JSON output includes `is_wsl: tr
 
 ### Platform Detection
 
-- WSL features only available on Windows
+- Linux-to-Windows worker calls require WSL interop and a Windows executable on WSL's PATH
 - Gracefully handle when WSL is not installed
 - Validate WSL distro exists before scanning
 
@@ -83,7 +100,7 @@ llm:
 1. **Unified View**: See all repositories (Windows + WSL) in one index
 2. **Clear Distinction**: Easy to identify WSL vs Windows repos
 3. **Seamless Workflow**: Navigate between Windows and WSL repos
-4. **Cross-platform**: Feature is Windows-only, doesn't affect Linux/Mac
+4. **Cross-platform**: WSL and Windows can each initiate scans while Git reads run on the owning OS
 
 ## Open Questions
 

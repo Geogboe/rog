@@ -98,6 +98,8 @@ rog scan --timings
 
 On Windows, rog launches one bundled Linux scanner process per configured WSL distro. Discovery and Git inspection run inside Linux; indexed paths remain `\\wsl$\...`. The first install prompts for the distro, exact cache path, and intended changes. Declining or running without a terminal skips that WSL root and preserves its indexed entries. Use `--approve-wsl-worker-install` for explicit unattended approval. `--dry-run` never installs a worker. The cache is `${XDG_CACHE_HOME:-$HOME/.cache}/rog/workers/<build-id>/` inside the distro. A matching cached worker launches without prompting. No `fd` or `fdfind` binary is needed.
 
+In WSL, set `windows: true` on roots with `C:\...` paths to have the installed Windows `rog.exe` scan them on Windows. Keep `rog.exe` on WSL's `PATH`. A failed or missing Windows worker marks the scan incomplete and preserves the previous index entries. WSL navigation returns `/mnt/c/...` paths; reporting asks the Windows worker to read Git. Native WSL roots on DrvFs produce a scan warning unless `scan.suppress_mount_warnings: true` is configured.
+
 **Performance:** Scan time depends on the number and location of configured roots. `--full` also checks every repository's Git state and can be substantially slower. Progress reports discovered Git markers, refreshed/reused repositories, the active name, and elapsed time. The final summary reports the actual number of indexed repositories. A scan with skipped or failed roots exits with code 2, retains their index entries, and prints a reason. Cancelled scans leave the previous index intact.
 
 ### `rog list`
@@ -364,12 +366,15 @@ List of directories to scan for repositories.
 - **exclude**: Directory names to skip (e.g., `node_modules`)
 - **wsl** (optional): Set to `true` for WSL roots (Windows only)
 - **wsl_distro** (optional): WSL distro name (e.g., `Ubuntu`)
+- **windows** (optional): Set to `true` in WSL for a Windows drive-absolute root; requires matching `rog.exe` on WSL's `PATH`
 
 #### `editor` (optional)
 
 Default editor command. Can be overridden by `ROG_EDITOR` or `EDITOR` env vars.
 
 #### `scan.progress` (optional)
+
+`scan.suppress_mount_warnings: true` hides the warning for native WSL roots on Windows DrvFs mounts.
 
 Controls scan progress rendering.
 

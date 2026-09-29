@@ -36,13 +36,15 @@ const rejectedMarkerMaxAge = 24 * time.Hour
 // Repo represents a single repository entry
 type Repo struct {
 	// Identity
-	ID        string `json:"id"`         // Hash of absolute path
-	Name      string `json:"name"`       // Directory name
-	Root      string `json:"root"`       // Root identifier
-	RelPath   string `json:"rel_path"`   // Relative to root
-	AbsPath   string `json:"abs_path"`   // Full resolved path
-	IsWSL     bool   `json:"is_wsl"`     // True if repo is in WSL
-	WSLDistro string `json:"wsl_distro"` // WSL distro name if IsWSL is true
+	ID          string `json:"id"`                     // Hash of absolute path
+	Name        string `json:"name"`                   // Directory name
+	Root        string `json:"root"`                   // Root identifier
+	RelPath     string `json:"rel_path"`               // Relative to root
+	AbsPath     string `json:"abs_path"`               // Full resolved path
+	IsWSL       bool   `json:"is_wsl"`                 // True if repo is in WSL
+	WSLDistro   string `json:"wsl_distro"`             // WSL distro name if IsWSL is true
+	IsWindows   bool   `json:"is_windows,omitempty"`   // Windows repo indexed from WSL
+	WindowsPath string `json:"windows_path,omitempty"` // Native path used by Windows worker
 
 	// Git Info
 	RemoteURL         string    `json:"remote_url,omitempty"`

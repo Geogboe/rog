@@ -30,6 +30,7 @@ type Scanner struct {
 	idx           *index.Index
 	globalMeta    *metadata.GlobalMeta
 	wslScan       WSLScanFunc
+	windowsScan   WSLScanFunc
 	checkRemote   bool
 	reuseExisting bool
 	workers       int
@@ -113,6 +114,12 @@ type WSLScanFunc func(context.Context, []config.Root, []string, []*index.Repo, *
 // WithWSLScan supplies the Windows-to-WSL transport without linking it into the Linux worker.
 func (s *Scanner) WithWSLScan(fn WSLScanFunc) *Scanner {
 	s.wslScan = fn
+	return s
+}
+
+// WithWindowsScan supplies the WSL-to-Windows transport.
+func (s *Scanner) WithWindowsScan(fn WSLScanFunc) *Scanner {
+	s.windowsScan = fn
 	return s
 }
 
@@ -240,6 +247,9 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 
 	for i := range s.cfg.Roots {
 		root := &s.cfg.Roots[i]
+		if root.Windows && runtime.GOOS != "windows" && s.windowsScan == nil {
+			return fmt.Errorf("Windows root %s requires a Windows worker", root.Name)
+		}
 		if !root.WSL || runtime.GOOS != "windows" {
 			continue
 		}
@@ -319,10 +329,15 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 	}
 
 	// Scan native roots independently and WSL roots once per distro.
-	rootErrors := make(chan error, len(s.cfg.Roots))
+	var rootErrors []error
+	var rootErrorMu sync.Mutex
+	addRootError := func(err error) { rootErrorMu.Lock(); rootErrors = append(rootErrors, err); rootErrorMu.Unlock() }
 	var rootWg sync.WaitGroup
 	wslGroups := make(map[string][]config.Root)
 	for _, root := range s.cfg.Roots {
+		if root.Windows && runtime.GOOS != "windows" {
+			continue
+		}
 		if root.WSL && runtime.GOOS == "windows" {
 			wslGroups[root.WSLDistro] = append(wslGroups[root.WSLDistro], root)
 			continue
@@ -335,7 +350,7 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 			s.metrics.CurrentRoot = r.Name
 			s.metrics.mu.Unlock()
 			if err := s.walkRootNative(ctx, r, repoChan); err != nil {
-				rootErrors <- fmt.Errorf("root %s: %w", r.Name, err)
+				addRootError(fmt.Errorf("root %s: %w", r.Name, err))
 			} else {
 				s.markRootComplete(r.Name)
 			}
@@ -371,7 +386,7 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 			s.metrics.TransportDuration += time.Since(transportStart)
 			s.metrics.mu.Unlock()
 			if err != nil {
-				rootErrors <- fmt.Errorf("WSL distro %s: %w", distro, err)
+				addRootError(fmt.Errorf("WSL distro %s: %w", distro, err))
 				return
 			}
 			s.metrics.mu.Lock()
@@ -385,7 +400,7 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 			s.metrics.MetadataDuration += result.Metadata
 			s.metrics.mu.Unlock()
 			for _, warning := range result.Warnings {
-				rootErrors <- fmt.Errorf("WSL distro %s: %s", distro, warning)
+				addRootError(fmt.Errorf("WSL distro %s: %s", distro, warning))
 			}
 			for _, name := range result.CompleteRoots {
 				s.markRootComplete(name)
@@ -403,10 +418,75 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 			}
 		}(distro, roots)
 	}
+	if runtime.GOOS != "windows" {
+		var windowsRoots []config.Root
+		for _, root := range s.cfg.Roots {
+			if root.Windows {
+				windowsRoots = append(windowsRoots, root)
+			}
+		}
+		if len(windowsRoots) > 0 {
+			rootWg.Add(1)
+			go func() {
+				defer rootWg.Done()
+				defer func() { s.metrics.mu.Lock(); s.metrics.RootsCompleted += len(windowsRoots); s.metrics.mu.Unlock() }()
+				transportStart := time.Now()
+				lastFound, lastRefreshed, lastReused := 0, 0, 0
+				onProgress := func(root, repo string, found, refreshed, reused int) {
+					s.metrics.mu.Lock()
+					s.metrics.ReposFound += found - lastFound
+					s.metrics.ReposRefreshed += refreshed - lastRefreshed
+					s.metrics.ReposReused += reused - lastReused
+					if root != "" {
+						s.metrics.CurrentRoot = "Windows/" + root
+					}
+					if repo != "" {
+						s.metrics.CurrentRepo = repo
+					}
+					lastFound, lastRefreshed, lastReused = found, refreshed, reused
+					s.metrics.mu.Unlock()
+				}
+				result, err := s.windowsScan(ctx, windowsRoots, s.cfg.GlobalExcludes, s.idx.List(), s.globalMeta, !s.reuseExisting, s.checkRemote, s.dryRun, onProgress)
+				s.metrics.mu.Lock()
+				s.metrics.TransportDuration += time.Since(transportStart)
+				s.metrics.mu.Unlock()
+				if err != nil {
+					addRootError(fmt.Errorf("Windows worker: %w", err))
+					return
+				}
+				s.metrics.mu.Lock()
+				s.metrics.ReposFound += result.Candidates - lastFound
+				s.metrics.ReposReused += result.Reused - lastReused
+				s.metrics.ReposRefreshed += result.Refreshed - lastRefreshed
+				s.metrics.StatusUnavailable += result.StatusUnavailable
+				s.metrics.StatusTimeouts += result.StatusTimeouts
+				s.metrics.DiscoveryDuration += result.Discovery
+				s.metrics.GitDuration += result.Git
+				s.metrics.MetadataDuration += result.Metadata
+				s.metrics.mu.Unlock()
+				for _, warning := range result.Warnings {
+					addRootError(fmt.Errorf("Windows worker: %s", warning))
+				}
+				for _, name := range result.CompleteRoots {
+					s.markRootComplete(name)
+				}
+				if s.dryRun {
+					return
+				}
+				s.foundMu.Lock()
+				for _, p := range result.Found {
+					s.foundPaths[p] = struct{}{}
+				}
+				s.foundMu.Unlock()
+				for _, repo := range result.Repos {
+					s.idx.Upsert(repo)
+				}
+			}()
+		}
+	}
 
 	// Wait for all roots to finish walking, then close channel
 	rootWg.Wait()
-	close(rootErrors)
 	close(repoChan)
 
 	// Wait for all repo processing to finish
@@ -414,12 +494,8 @@ func (s *Scanner) ScanContext(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	var failed []error
-	for err := range rootErrors {
-		failed = append(failed, err)
-	}
-	if len(failed) > 0 {
-		return &IncompleteError{Errors: failed}
+	if len(rootErrors) > 0 {
+		return &IncompleteError{Errors: rootErrors}
 	}
 	return nil
 }

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -623,7 +622,7 @@ func git(ctx context.Context, dir string, timeout time.Duration, limit int, args
 func gitInput(ctx context.Context, dir string, timeout time.Duration, limit int, input []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, gitpkg.Executable(), args...)
+	cmd := gitpkg.CommandContext(ctx, args...)
 	cmd.Dir = dir
 	if input != nil {
 		cmd.Stdin = bytes.NewReader(input)

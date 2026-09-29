@@ -20,6 +20,7 @@ import (
 	"github.com/Geogboe/rog/internal/llm"
 	"github.com/Geogboe/rog/internal/logger"
 	"github.com/Geogboe/rog/internal/scanner"
+	"github.com/Geogboe/rog/internal/windowsbridge"
 	"github.com/Geogboe/rog/internal/wslbridge"
 )
 
@@ -86,6 +87,7 @@ func runScan(cmd *cobra.Command, args []string) {
 	if len(cfg.Roots) == 0 {
 		exitWithError("No roots configured. Run 'rog init' first.")
 	}
+	warnMountedWindowsRoots(cfg, os.Stderr)
 
 	cfgProgress := ""
 	if cfg.Scan != nil {
@@ -110,6 +112,8 @@ func runScan(cmd *cobra.Command, args []string) {
 	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote).WithDryRun(scanDryRun).WithReuseExisting(reuseExisting)
 	if runtime.GOOS == "windows" {
 		scan.WithWSLScan((wslbridge.Bridge{Approve: approveWSLWorker}).Scan)
+	} else {
+		scan.WithWindowsScan((windowsbridge.Bridge{}).Scan)
 	}
 	fmt.Fprint(os.Stdout, renderer.Start(scanProgressSnapshot{
 		Phase:      scanPhaseScan,

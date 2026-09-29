@@ -25,3 +25,18 @@ A separate Ubuntu run scanning one Linux root and two mounted Windows roots comp
 - Automated tests: `go test ./... -short`, `go vet ./...`, focused race tests, Windows cross-build, Linux build, a successful GoReleaser snapshot with notices in the Windows and Linux archives, and a 10,000-entry picker matcher benchmark. The matcher took about 3.7 ms per pass on the measured machine.
 
 The status-unavailable count includes repositories with damaged Git objects. rog reports them without editing those repositories. The remaining work is tracked in GitHub issues rather than a local future-work file.
+
+## WSL-to-Windows worker comparison, 2026-09-29
+
+Both runs used the same three roots (one Linux, two Windows) and separate copies of the same 748-entry WSL index. The first run scanned Windows through WSL's DrvFs mount; the second used one Windows worker. No comparison run wrote the live index.
+
+| Operation | Mounted scan | Windows worker |
+| --- | ---: | ---: |
+| Full refresh wall time | 76.4 s | 42.5 s |
+| Git markers discovered | 823 | 823 |
+| Indexed repositories | 748 | 751 |
+| Unavailable Git statuses | 62 | 5 |
+| Status timeouts | 60 | 2 |
+| Warm default scan after fix | Not remeasured | 0.528 s; 751 reused |
+
+The worker indexed three additional worktrees. Their `.git` files refer to Windows drive paths, which Linux Git rejects when reached through `/mnt/c`; Windows Git reads them successfully. All 748 paths from the mounted scan were present in the worker index. A separate fast migration from a copy of the original index preserved all compared descriptions, tags, source labels, and first-seen timestamps; it indexed the same three additional worktrees in 0.836 s. The initial bridge warm run took 30.9 s because relative paths sent to Windows used Linux separators; converting them to Windows separators reduced the subsequent run to 0.528 s. Stage timings are aggregate overlapping work, not wall time.

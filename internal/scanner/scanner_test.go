@@ -2,17 +2,46 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"testing"
 
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/index"
+	"github.com/Geogboe/rog/internal/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWindowsWorkerFailureKeepsRootIncomplete(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("WSL transport runs on Linux")
+	}
+	idx := index.New()
+	old := &index.Repo{Name: "old", Root: "windows", AbsPath: "/mnt/c/old", IsWindows: true, WindowsPath: `C:\old`}
+	idx.Upsert(old)
+	scan := New(&config.Config{Roots: []config.Root{{Name: "windows", Path: `C:\projects`, Windows: true}}}, idx)
+	scan.WithWindowsScan(func(context.Context, []config.Root, []string, []*index.Repo, *metadata.GlobalMeta, bool, bool, bool, func(string, string, int, int, int)) (WSLResult, error) {
+		return WSLResult{}, errors.New("interop unavailable")
+	})
+	var incomplete *IncompleteError
+	if err := scan.ScanContext(context.Background()); !errors.As(err, &incomplete) {
+		t.Fatalf("scan error = %v", err)
+	}
+	if len(scan.CompletedRoots()) != 0 {
+		t.Fatal("failed root marked complete")
+	}
+	if removed := idx.RemoveStaleInRoots(scan.FoundPaths(), scan.CompletedRoots()); removed != 0 {
+		t.Fatalf("removed %d cached repos", removed)
+	}
+	if _, ok := idx.Get(old.AbsPath); !ok {
+		t.Fatal("cached repository lost")
+	}
+}
 
 func TestExtractReadmeDescription(t *testing.T) {
 	tests := []struct {

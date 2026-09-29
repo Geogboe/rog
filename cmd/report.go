@@ -21,6 +21,7 @@ import (
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/report"
 	"github.com/Geogboe/rog/internal/reportui"
+	"github.com/Geogboe/rog/internal/windowsbridge"
 	"github.com/Geogboe/rog/internal/wsl"
 	"github.com/Geogboe/rog/internal/wslbridge"
 )
@@ -112,6 +113,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 	}
 	var local []*index.Repo
 	wslRepos := map[string][]*index.Repo{}
+	var windowsRepos []*index.Repo
 	stale := 0
 	for _, repo := range idx.List() {
 		root, ok := roots[repo.Root]
@@ -121,6 +123,8 @@ func runReport(cmd *cobra.Command, args []string) error {
 		}
 		if repo.IsWSL && runtime.GOOS == "windows" {
 			wslRepos[repo.WSLDistro] = append(wslRepos[repo.WSLDistro], repo)
+		} else if repo.IsWindows && runtime.GOOS == "linux" {
+			windowsRepos = append(windowsRepos, repo)
 		} else {
 			local = append(local, repo)
 		}
@@ -187,6 +191,24 @@ func runReport(cmd *cobra.Command, args []string) error {
 			d.Warnings = append(d.Warnings, fmt.Sprintf("WSL %s: %s", distro, w))
 		}
 	}
+	if len(windowsRepos) > 0 {
+		var windowsRoots []config.Root
+		for _, root := range cfg.Roots {
+			if root.Windows {
+				windowsRoots = append(windowsRoots, root)
+			}
+		}
+		tracker.Phase("Windows Git", len(windowsRepos))
+		remoteProjects, remoteWarnings, err := (windowsbridge.Bridge{}).Report(ctx, windowsRoots, windowsRepos, report.Options{Since: since, Until: until, AuthorEmails: emails, IncludePatches: reportLLM && cfg.LLM != nil, OnProgress: func(done, total int, _ string) { tracker.Advance(done, total, "") }})
+		if err != nil {
+			d.Warnings = append(d.Warnings, fmt.Sprintf("Windows: %v", err))
+		} else {
+			d.Projects = append(d.Projects, remoteProjects...)
+			for _, warning := range remoteWarnings {
+				d.Warnings = append(d.Warnings, "Windows: "+warning)
+			}
+		}
+	}
 	for _, p := range d.Projects {
 		for _, w := range p.Warnings {
 			d.Warnings = append(d.Warnings, fmt.Sprintf("%s: %s", p.Name, w))
@@ -205,7 +227,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 			return "", fmt.Errorf("configure llm.endpoint and llm.model before generating AI Summary")
 		}
 		if !reportLLM {
-			fillReportPatches(callCtx, &d, wslRepos, cfg, emails)
+			fillReportPatches(callCtx, &d, wslRepos, windowsRepos, cfg, emails)
 		}
 		return report.GenerateAI(callCtx, d, cfg.LLM)
 	}
@@ -338,6 +360,19 @@ func containsWarning(warnings []string, needle string) bool {
 }
 
 func repoInConfiguredRoot(repo *index.Repo, root config.Root) bool {
+	if root.Windows && runtime.GOOS == "linux" {
+		if !repo.IsWindows || repo.WindowsPath == "" {
+			return false
+		}
+		expected := strings.TrimRight(strings.ReplaceAll(root.Path, "/", `\`), `\`)
+		if repo.RelPath != "" && repo.RelPath != "." {
+			expected += `\` + strings.ReplaceAll(repo.RelPath, "/", `\`)
+		}
+		return strings.EqualFold(expected, repo.WindowsPath)
+	}
+	if repo.IsWindows {
+		return false
+	}
 	if repo.IsWSL && runtime.GOOS == "windows" {
 		if !root.WSL || (root.WSLDistro != "" && !strings.EqualFold(root.WSLDistro, repo.WSLDistro)) {
 			return false
@@ -352,7 +387,7 @@ func repoInConfiguredRoot(repo *index.Repo, root config.Root) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func fillReportPatches(ctx context.Context, d *report.Document, wslRepos map[string][]*index.Repo, cfg *config.Config, emails []string) {
+func fillReportPatches(ctx context.Context, d *report.Document, wslRepos map[string][]*index.Repo, windowsRepos []*index.Repo, cfg *config.Config, emails []string) {
 	for i := range d.Projects {
 		if d.Projects[i].SourcePath != "" && len(d.Projects[i].AIPatches) == 0 {
 			d.Projects[i].AIPatches = report.PatchExcerpts(ctx, d.Projects[i], 6000)
@@ -380,6 +415,27 @@ func fillReportPatches(ctx context.Context, d *report.Document, wslRepos map[str
 			for i := range d.Projects {
 				if len(p.Paths) > 0 && len(d.Projects[i].Paths) > 0 && p.Paths[0] == d.Projects[i].Paths[0] {
 					d.Projects[i].AIPatches = p.AIPatches
+					break
+				}
+			}
+		}
+	}
+	if len(windowsRepos) > 0 {
+		var roots []config.Root
+		for _, root := range cfg.Roots {
+			if root.Windows {
+				roots = append(roots, root)
+			}
+		}
+		projects, _, err := (windowsbridge.Bridge{}).Report(ctx, roots, windowsRepos, report.Options{Since: d.Since, Until: d.Until, AuthorEmails: emails, IncludePatches: true})
+		if err != nil {
+			d.Warnings = append(d.Warnings, "AI patch context unavailable for Windows")
+			return
+		}
+		for _, project := range projects {
+			for i := range d.Projects {
+				if len(project.Paths) > 0 && len(d.Projects[i].Paths) > 0 && project.Paths[0] == d.Projects[i].Paths[0] {
+					d.Projects[i].AIPatches = project.AIPatches
 					break
 				}
 			}
