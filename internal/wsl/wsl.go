@@ -19,7 +19,7 @@ func IsAvailable() bool {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable(), "--list", "--quiet")
+	cmd := hiddenCommandContext(ctx, "--list", "--quiet")
 	return cmd.Run() == nil
 }
 
@@ -44,7 +44,7 @@ func GetDefaultDistro() (string, error) {
 	// Query inside the default distro to avoid decoding wsl --list's UTF-16 output.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, executable(), "--exec", "printenv", "WSL_DISTRO_NAME").Output()
+	output, err := hiddenCommandContext(ctx, "--exec", "printenv", "WSL_DISTRO_NAME").Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get default WSL distro: %w", err)
 	}
@@ -66,7 +66,7 @@ func ExecInDistroContext(ctx context.Context, distro string, command string, arg
 	wslArgs := []string{"-d", distro, "--exec", command}
 	wslArgs = append(wslArgs, args...)
 
-	return exec.CommandContext(ctx, executable(), wslArgs...)
+	return hiddenCommandContext(ctx, wslArgs...)
 }
 
 // TranslatePathToWindows converts a WSL path to the Windows UNC share.
