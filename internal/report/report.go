@@ -418,15 +418,9 @@ func collectGroup(ctx context.Context, repos []*index.Repo, opts Options) Projec
 			continue
 		}
 		commit := Commit{Hash: fields[0], AuthorEmail: fields[1], AuthorTime: authorAt, CommitTime: commitAt, Subject: clean(fields[5]), Merge: len(strings.Fields(fields[4])) > 1}
-		if !commit.Merge {
-			if stats, statErr := git(ctx, first.AbsPath, 5*time.Second, 256<<10, "show", "--format=", "--numstat", "-z", "--no-renames", "--root", commit.Hash); statErr == nil {
-				parseNumstat(stats, &commit)
-			} else {
-				p.Warnings = append(p.Warnings, fmt.Sprintf("%s: change volume unavailable", commit.Hash[:min(8, len(commit.Hash))]))
-			}
-		}
 		p.Commits = append(p.Commits, commit)
 	}
+	p.Warnings = append(p.Warnings, fillCommitStats(ctx, first.AbsPath, p.Commits)...)
 	sort.Slice(p.Commits, func(i, j int) bool { return p.Commits[i].AuthorTime.After(p.Commits[j].AuthorTime) })
 	p.Metrics = metrics(p)
 	if opts.IncludePatches {
@@ -465,23 +459,115 @@ func metrics(p Project) Metrics {
 
 func parseNumstat(out []byte, commit *Commit) {
 	for _, line := range strings.Split(string(out), "\x00") {
-		line = strings.TrimPrefix(line, "\n")
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		commit.ChangedPaths = append(commit.ChangedPaths, clean(parts[2]))
-		if parts[0] == "-" || parts[1] == "-" {
-			commit.BinaryChanges++
-			continue
-		}
-		a, e1 := strconv.Atoi(parts[0])
-		d, e2 := strconv.Atoi(parts[1])
-		if e1 == nil && e2 == nil {
-			commit.Additions += a
-			commit.Deletions += d
+		parseNumstatLine(strings.TrimPrefix(line, "\n"), commit)
+	}
+}
+
+func parseNumstatLine(line string, commit *Commit) bool {
+	parts := strings.SplitN(line, "\t", 3)
+	if len(parts) != 3 {
+		return false
+	}
+	commit.ChangedPaths = append(commit.ChangedPaths, clean(parts[2]))
+	if parts[0] == "-" || parts[1] == "-" {
+		commit.BinaryChanges++
+		return true
+	}
+	a, e1 := strconv.Atoi(parts[0])
+	d, e2 := strconv.Atoi(parts[1])
+	if e1 == nil && e2 == nil {
+		commit.Additions += a
+		commit.Deletions += d
+	}
+	return e1 == nil && e2 == nil
+}
+
+// fillCommitStats reads selected non-merge diffs in bounded batches. A failed
+// batch is split so one large or corrupt commit cannot hide its neighbors.
+func fillCommitStats(ctx context.Context, dir string, commits []Commit) []string {
+	var selected []int
+	for i := range commits {
+		if !commits[i].Merge {
+			selected = append(selected, i)
 		}
 	}
+	var warnings []string
+	for start := 0; start < len(selected); start += 16 {
+		end := min(start+16, len(selected))
+		warnings = append(warnings, fillCommitStatsBatch(ctx, dir, commits, selected[start:end])...)
+	}
+	return warnings
+}
+
+func fillCommitStatsBatch(ctx context.Context, dir string, commits []Commit, selected []int) []string {
+	if len(selected) == 0 {
+		return nil
+	}
+	var input strings.Builder
+	hashes := make([]string, 0, len(selected))
+	for _, i := range selected {
+		hashes = append(hashes, commits[i].Hash)
+		input.WriteString(commits[i].Hash)
+		input.WriteByte('\n')
+	}
+	out, err := gitInput(ctx, dir, 8*time.Second, 4<<20, []byte(input.String()), "diff-tree", "--stdin", "-r", "--root", "--numstat", "-z", "--no-renames")
+	if err == nil {
+		var stats []Commit
+		stats, err = parseBatchNumstat(out, hashes)
+		if err == nil {
+			for n, i := range selected {
+				commits[i].ChangedPaths = stats[n].ChangedPaths
+				commits[i].Additions = stats[n].Additions
+				commits[i].Deletions = stats[n].Deletions
+				commits[i].BinaryChanges = stats[n].BinaryChanges
+			}
+			return nil
+		}
+	}
+	if len(selected) > 1 && ctx.Err() == nil {
+		mid := len(selected) / 2
+		warnings := fillCommitStatsBatch(ctx, dir, commits, selected[:mid])
+		return append(warnings, fillCommitStatsBatch(ctx, dir, commits, selected[mid:])...)
+	}
+	if ctx.Err() != nil {
+		warnings := make([]string, 0, len(selected))
+		for _, i := range selected {
+			warnings = append(warnings, fmt.Sprintf("%s: change volume unavailable", commits[i].Hash[:min(8, len(commits[i].Hash))]))
+		}
+		return warnings
+	}
+	i := selected[0]
+	// Preserve the previous Git behavior when a single commit cannot be read
+	// through diff-tree, including its per-commit output bound.
+	if ctx.Err() == nil {
+		if stats, showErr := git(ctx, dir, 5*time.Second, 256<<10, "show", "--format=", "--numstat", "-z", "--no-renames", "--root", commits[i].Hash); showErr == nil {
+			parseNumstat(stats, &commits[i])
+			return nil
+		}
+	}
+	return []string{fmt.Sprintf("%s: change volume unavailable", commits[i].Hash[:min(8, len(commits[i].Hash))])}
+}
+
+func parseBatchNumstat(out []byte, hashes []string) ([]Commit, error) {
+	stats := make([]Commit, len(hashes))
+	current := -1
+	for _, part := range bytes.Split(out, []byte{0}) {
+		if len(part) == 0 {
+			continue
+		}
+		line := strings.TrimPrefix(string(part), "\n")
+		if current+1 < len(hashes) && line == hashes[current+1] {
+			current++
+			continue
+		}
+		if current < 0 || !parseNumstatLine(line, &stats[current]) {
+			return nil, fmt.Errorf("unexpected diff-tree output")
+		}
+	}
+	if current+1 != len(hashes) {
+		return nil, fmt.Errorf("missing diff-tree commits")
+	}
+	return stats, nil
 }
 
 func currentChanges(ctx context.Context, dir string) ([]string, error) {
@@ -531,10 +617,17 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func git(ctx context.Context, dir string, timeout time.Duration, limit int, args ...string) ([]byte, error) {
+	return gitInput(ctx, dir, timeout, limit, nil, args...)
+}
+
+func gitInput(ctx context.Context, dir string, timeout time.Duration, limit int, input []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gitpkg.Executable(), args...)
 	cmd.Dir = dir
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 	var out limitedBuffer
 	out.limit = limit
 	cmd.Stdout = &out

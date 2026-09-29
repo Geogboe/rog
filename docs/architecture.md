@@ -384,6 +384,12 @@ rog
 - Smaller binary
 - Users already have git installed
 
+Reports batch selected, non-merge commit change stats through
+`git diff-tree --stdin` instead of starting `git show` once per commit. Batches
+are bounded by commit count, output size, and command timeout; a failed batch
+is split to preserve readable commits and report unavailable change volume for
+failures.
+
 ### 3. Concurrency Model
 
 **Scanning**: Worker pool with bounded concurrency (NumCPU * 2)

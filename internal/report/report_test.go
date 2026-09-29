@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -168,6 +169,52 @@ func TestCollectAllLocalBranchesAndWorktrees(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(p.Commits[0].ChangedPaths, ","), "ü") {
 		t.Fatalf("Unicode path missing: %+v", p.Commits[0].ChangedPaths)
+	}
+}
+
+func TestBatchedCommitStatsMatchGitShow(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-b", "main")
+	runGit(t, repo, "config", "user.name", "Test")
+	runGit(t, repo, "config", "user.email", "me@example.test")
+	runGit(t, repo, "config", "commit.gpgsign", "false")
+	runGit(t, repo, "config", "core.hooksPath", filepath.Join(repo, "nohooks"))
+	file := filepath.Join(repo, "unicode ü spaced.txt")
+	var commits []Commit
+	for i := range 17 {
+		if err := os.WriteFile(file, []byte(strings.Repeat("line\n", i+1)), 0644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, repo, "add", ".")
+		runGit(t, repo, "commit", "-m", fmt.Sprintf("commit %d", i))
+		commits = append(commits, Commit{Hash: runGit(t, repo, "rev-parse", "HEAD")})
+	}
+	if err := os.WriteFile(filepath.Join(repo, "binary.dat"), []byte{0, 1, 2, 3}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", "binary.dat")
+	runGit(t, repo, "commit", "-m", "binary")
+	commits = append(commits, Commit{Hash: runGit(t, repo, "rev-parse", "HEAD")})
+	runGit(t, repo, "commit", "--allow-empty", "-m", "empty")
+	commits = append(commits, Commit{Hash: runGit(t, repo, "rev-parse", "HEAD")})
+
+	if warnings := fillCommitStats(context.Background(), repo, commits); len(warnings) != 0 {
+		t.Fatalf("batch warnings: %v", warnings)
+	}
+	for i := range commits {
+		out, err := git(context.Background(), repo, 5*time.Second, 256<<10, "show", "--format=", "--numstat", "-z", "--no-renames", "--root", commits[i].Hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := Commit{}
+		parseNumstat(out, &want)
+		got := commits[i]
+		if !reflect.DeepEqual(got.ChangedPaths, want.ChangedPaths) || got.Additions != want.Additions || got.Deletions != want.Deletions || got.BinaryChanges != want.BinaryChanges {
+			t.Fatalf("commit %d stats mismatch: got=%+v want=%+v", i, got, want)
+		}
+	}
+	if commits[17].BinaryChanges != 1 || len(commits[18].ChangedPaths) != 0 {
+		t.Fatalf("binary and empty commits lost: %+v %+v", commits[17], commits[18])
 	}
 }
 
