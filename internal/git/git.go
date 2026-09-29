@@ -273,7 +273,7 @@ func parseReflogLine(line string) (*CommitInfo, error) {
 
 // GetBranch returns the current branch name
 func GetBranch(repoPath string) (string, error) {
-	cmd := exec.Command(gitExecutable(), "rev-parse", "--abbrev-ref", "HEAD")
+	cmd := gitCommand("rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -288,7 +288,7 @@ func GetBranch(repoPath string) (string, error) {
 // GetLastCommit returns information about the last commit
 func GetLastCommit(repoPath string) (*CommitInfo, error) {
 	// Format: hash|author|timestamp
-	cmd := exec.Command(gitExecutable(), "log", "-1", "--format=%H|%an|%ct")
+	cmd := gitCommand("log", "-1", "--format=%H|%an|%ct")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -323,7 +323,7 @@ func GetLastCommit(repoPath string) (*CommitInfo, error) {
 func GetStatus(repoPath string) (*Status, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, gitExecutable(), "--no-optional-locks", "status", "--porcelain")
+	cmd := gitCommandContext(ctx, "--no-optional-locks", "status", "--porcelain")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -363,7 +363,7 @@ func GetStatus(repoPath string) (*Status, error) {
 
 // GetRemoteURL returns the remote URL for the origin remote
 func GetRemoteURL(repoPath string) (string, error) {
-	cmd := exec.Command(gitExecutable(), "remote", "get-url", "origin")
+	cmd := gitCommand("remote", "get-url", "origin")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -379,14 +379,14 @@ func GetRemoteURL(repoPath string) (string, error) {
 // GetRemoteStatus returns ahead/behind counts compared to upstream
 func GetRemoteStatus(repoPath string) (*RemoteStatus, error) {
 	// First, fetch to get latest remote state
-	fetchCmd := exec.Command(gitExecutable(), "fetch", "--quiet")
+	fetchCmd := gitCommand("fetch", "--quiet")
 	fetchCmd.Dir = repoPath
 	if err := fetchCmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}
 
 	// Get ahead/behind counts
-	cmd := exec.Command(gitExecutable(), "rev-list", "--left-right", "--count", "HEAD...@{u}")
+	cmd := gitCommand("rev-list", "--left-right", "--count", "HEAD...@{u}")
 	cmd.Dir = repoPath
 
 	output, err := cmd.Output()
@@ -447,7 +447,7 @@ func ExtractHost(url string) string {
 
 // IsGitRepo checks if a directory is a git repository
 func IsGitRepo(path string) bool {
-	cmd := exec.Command(gitExecutable(), "rev-parse", "--git-dir")
+	cmd := gitCommand("rev-parse", "--git-dir")
 	cmd.Dir = path
 
 	var stderr bytes.Buffer
