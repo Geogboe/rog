@@ -17,6 +17,7 @@ import (
 	"github.com/Geogboe/rog/internal/metadata"
 	"github.com/Geogboe/rog/internal/report"
 	"github.com/Geogboe/rog/internal/scanner"
+	"github.com/Geogboe/rog/internal/setup"
 	"github.com/Geogboe/rog/internal/workerproto"
 )
 
@@ -106,7 +107,7 @@ func (b Bridge) invoke(ctx context.Context, req workerproto.Request, onEvent fun
 			_ = command.Wait()
 			return fmt.Errorf("decode Windows worker event: %w", err)
 		}
-		if event.Type == "result" {
+		if event.Type == "result" || event.Type == "discovery_result" {
 			resultSeen = true
 		}
 		if err := onEvent(event); err != nil {
@@ -189,6 +190,34 @@ func mapPath(full string, roots []config.Root, paths map[string]string) (string,
 		return "", "", "", false
 	}
 	return path.Join(paths[name], rel), name, rel, true
+}
+
+// Discover scans Windows paths using the filesystem-owning Windows process.
+func (b Bridge) Discover(ctx context.Context, roots []config.Root, excludes []string, progress func(string, string, int, int)) (setup.DiscoveryResult, error) {
+	var result setup.DiscoveryResult
+	search := make([]setup.SearchRoot, 0, len(roots))
+	for _, root := range roots {
+		search = append(search, setup.SearchRoot{Name: root.Name, Path: root.Path, Windows: true})
+	}
+	req := workerproto.Request{Version: workerproto.Version, Operation: "discover", DiscoveryRoots: search, DiscoveryExcludes: excludes}
+	err := b.invoke(ctx, req, func(event workerproto.Event) error {
+		switch event.Type {
+		case "discovery_progress":
+			if p := event.DiscoveryProgress; p != nil && progress != nil {
+				progress(p.Root, p.Name, p.Completed, p.Total)
+			}
+		case "discovery_result":
+			if event.Result == nil || event.Result.Discovery == nil {
+				return fmt.Errorf("empty Windows discovery result")
+			}
+			if event.Result.Version != workerproto.Version {
+				return fmt.Errorf("Windows discovery protocol %d, need %d", event.Result.Version, workerproto.Version)
+			}
+			result = *event.Result.Discovery
+		}
+		return nil
+	})
+	return result, err
 }
 
 // Scan asks Windows to perform all filesystem and Git reads for its roots.

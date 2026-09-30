@@ -14,6 +14,7 @@ import (
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/report"
 	"github.com/Geogboe/rog/internal/scanner"
+	"github.com/Geogboe/rog/internal/setup"
 	"github.com/Geogboe/rog/internal/workerproto"
 )
 
@@ -24,6 +25,18 @@ func Run(ctx context.Context, req workerproto.Request, out io.Writer) error {
 	}
 	if req.Operation == "report" {
 		return runReport(ctx, req, out)
+	}
+	if req.Operation == "discover" {
+		enc := json.NewEncoder(out)
+		var mu sync.Mutex
+		result := setup.Discover(ctx, req.DiscoveryRoots, req.DiscoveryExcludes, func(root, name string, done, total int) {
+			mu.Lock()
+			defer mu.Unlock()
+			_ = enc.Encode(workerproto.Event{Type: "discovery_progress", DiscoveryProgress: &workerproto.DiscoveryProgress{Root: root, Name: name, Completed: done, Total: total}})
+		})
+		mu.Lock()
+		defer mu.Unlock()
+		return enc.Encode(workerproto.Event{Type: "discovery_result", Result: &workerproto.Response{Version: workerproto.Version, Discovery: &result}})
 	}
 	if req.Operation != "" && req.Operation != "scan" {
 		return fmt.Errorf("unknown worker operation %q", req.Operation)

@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Geogboe/rog/internal/config"
 	gitpkg "github.com/Geogboe/rog/internal/git"
 	"github.com/Geogboe/rog/internal/index"
 )
@@ -22,18 +24,161 @@ import (
 const SchemaVersion = 1
 
 type Document struct {
-	SchemaVersion   int       `json:"schema_version"`
-	GeneratedAt     time.Time `json:"generated_at"`
-	IndexUpdatedAt  time.Time `json:"index_updated_at"`
-	Since           time.Time `json:"since"`
-	Until           time.Time `json:"until"`
-	Timezone        string    `json:"timezone"`
-	ConfiguredRoots []string  `json:"configured_roots"`
-	Projects        []Project `json:"projects"`
-	Warnings        []string  `json:"warnings,omitempty"`
-	Complete        bool      `json:"complete"`
-	CollectionMS    int64     `json:"collection_ms"`
-	AISummary       string    `json:"ai_summary,omitempty"`
+	SchemaVersion       int       `json:"schema_version"`
+	GeneratedAt         time.Time `json:"generated_at"`
+	IndexUpdatedAt      time.Time `json:"index_updated_at"`
+	Since               time.Time `json:"since"`
+	Until               time.Time `json:"until"`
+	Timezone            string    `json:"timezone"`
+	ConfiguredRoots     []string  `json:"configured_roots"`
+	Projects            []Project `json:"projects"`
+	Warnings            []string  `json:"warnings,omitempty"`
+	Complete            bool      `json:"complete"`
+	CollectionMS        int64     `json:"collection_ms"`
+	AISummary           string    `json:"ai_summary,omitempty"`
+	Coverage            Coverage  `json:"coverage"`
+	CoverageExplanation string    `json:"coverage_explanation,omitempty"`
+}
+
+type Coverage struct {
+	IndexedRepositories        int `json:"indexed_repositories"`
+	GroupedProjects            int `json:"grouped_projects"`
+	ProjectsWithCommits        int `json:"projects_with_commits"`
+	ProjectsWithCurrentChanges int `json:"projects_with_current_changes"`
+	UnavailableProjects        int `json:"unavailable_projects"`
+}
+
+// ExplainCoverage describes why a project is or is not represented in a report.
+func ExplainCoverage(query string, cfg *config.Config, repos []*index.Repo, d Document) string {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return "Enter a project name or path."
+	}
+	var matched *index.Repo
+	for _, repo := range repos {
+		if repo == nil {
+			continue
+		}
+		if strings.EqualFold(repo.Name, q) || strings.EqualFold(repo.AbsPath, q) || strings.EqualFold(repo.WindowsPath, q) {
+			matched = repo
+			break
+		}
+		if strings.Contains(strings.ToLower(repo.AbsPath), strings.ToLower(q)) {
+			matched = repo
+		}
+	}
+	if matched != nil {
+		var project *Project
+		for i := range d.Projects {
+			for _, p := range d.Projects[i].Paths {
+				if sameReportPath(p, matched.AbsPath) || sameReportPath(p, matched.WindowsPath) {
+					project = &d.Projects[i]
+					break
+				}
+			}
+			if project != nil {
+				break
+			}
+		}
+		if project == nil {
+			return fmt.Sprintf("%s is indexed, but its report evidence is unavailable. Check warnings and worker availability.", matched.Name)
+		}
+		if len(project.Commits) > 0 || project.Metrics.CurrentChangedPaths > 0 {
+			activeRank := 0
+			for i := range d.Projects {
+				candidate := d.Projects[i]
+				if candidate.Metrics.Commits == 0 && candidate.Metrics.CurrentChangedPaths == 0 {
+					continue
+				}
+				activeRank++
+				if &d.Projects[i] == project && activeRank > 50 {
+					return fmt.Sprintf("%s is included in the report evidence but omitted from the Dashboard, which displays the top 50 active projects. JSON includes all projects.", matched.Name)
+				}
+			}
+		}
+		if len(project.Commits) > 0 {
+			return fmt.Sprintf("%s is included with %d matching authored commits in the selected date range.", matched.Name, len(project.Commits))
+		}
+		if project.Metrics.CurrentChangedPaths > 0 {
+			return fmt.Sprintf("%s has %d current working-tree paths, but no authored commits matched the selected range and author identities. Current edits are undated.", matched.Name, project.Metrics.CurrentChangedPaths)
+		}
+		if len(project.Warnings) > 0 {
+			return fmt.Sprintf("%s was found, but history or working-tree evidence is incomplete: %s", matched.Name, strings.Join(project.Warnings, "; "))
+		}
+		return fmt.Sprintf("%s is indexed but has no authored commits matching this date range and author email. Check --since, --until, --author-email, and the Git author email in rog config.", matched.Name)
+	}
+	for _, root := range cfg.Roots {
+		searchRoot := root.Path
+		searchQuery := q
+		if runtime.GOOS == "linux" && root.Windows {
+			searchRoot = windowsToWSL(root.Path)
+			if windowsDriveAbsolute(q) {
+				searchQuery = windowsToWSL(q)
+			}
+		}
+		if runtime.GOOS == "windows" && root.WSL {
+			searchRoot = `\\wsl$\` + root.WSLDistro + strings.ReplaceAll(root.Path, "/", `\`)
+			if strings.HasPrefix(q, "/") {
+				searchQuery = `\\wsl$\` + root.WSLDistro + strings.ReplaceAll(q, "/", `\`)
+			}
+		}
+		if pathWithin(searchRoot, searchQuery) {
+			rel, err := filepath.Rel(searchRoot, searchQuery)
+			if err == nil && root.MaxDepth > 0 && pathDepth(rel) > root.MaxDepth {
+				return fmt.Sprintf("%s is under Configured Root %s but beyond max_depth %d. Increase that depth in rog setup, then run rog scan.", q, root.Name, root.MaxDepth)
+			}
+			parts := strings.FieldsFunc(filepath.Clean(rel), func(r rune) bool { return r == '/' || r == '\\' })
+			exclusions := append(append([]string(nil), cfg.GlobalExcludes...), root.Exclude...)
+			for _, part := range parts {
+				for _, excluded := range exclusions {
+					if strings.EqualFold(part, excluded) {
+						return fmt.Sprintf("%s is beneath excluded folder %s in Configured Root %s.", q, excluded, root.Name)
+					}
+				}
+			}
+			if _, err := os.Stat(filepath.Join(searchQuery, ".git")); err == nil {
+				return fmt.Sprintf("Git marker found at %s under Configured Root %s, but it is not indexed. Run rog scan; if discovery still rejects it, rog setup will show the marker validation result.", q, root.Name)
+			}
+			return fmt.Sprintf("%s is under Configured Root %s but is not indexed. It may not contain a valid Git repository marker, or the last scan may be stale; run rog scan.", q, root.Name)
+		}
+	}
+	if filepath.IsAbs(q) || windowsDriveAbsolute(q) || strings.HasPrefix(q, `\\`) {
+		return fmt.Sprintf("%s is outside the current Configured Roots. Add its parent as a root in rog setup, then run rog scan.", q)
+	}
+	return fmt.Sprintf("No indexed project matches %q. Run rog scan to refresh Configured Roots, then use rog report --explain with the project name or path.", q)
+}
+
+func windowsDriveAbsolute(value string) bool {
+	return len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/')
+}
+
+func sameReportPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
+}
+func pathWithin(root, candidate string) bool {
+	if runtime.GOOS == "linux" && len(root) > 2 && root[1] == ':' && root[2] == '\\' {
+		root = windowsToWSL(root)
+	}
+	if runtime.GOOS == "windows" && strings.HasPrefix(root, "/") {
+		return false
+	}
+	rel, err := filepath.Rel(root, candidate)
+	return err == nil && (rel == "." || rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func windowsToWSL(path string) string {
+	drive := strings.ToLower(path[:1])
+	rest := strings.ReplaceAll(path[2:], `\`, `/`)
+	return "/mnt/" + drive + rest
+}
+func pathDepth(rel string) int {
+	if rel == "." || rel == "" {
+		return 0
+	}
+	return len(strings.Split(filepath.Clean(rel), string(filepath.Separator)))
 }
 
 func (d Document) WeeklyProjects() []Project {

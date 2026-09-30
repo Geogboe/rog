@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -45,5 +46,25 @@ func TestWalkCancellation(t *testing.T) {
 	cancel()
 	if err := Walk(ctx, t.TempDir(), 2, nil, func(string) error { t.Fatal("unexpected result"); return nil }); err != context.Canceled {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestWalkWithProgressReportsVisitedDirectories(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "group", "repo"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	var visited atomic.Int64
+	err := WalkWithProgress(context.Background(), root, 3, nil, func(path string, depth int) {
+		if path == "" || depth < 0 {
+			t.Errorf("invalid traversal progress: %q at depth %d", path, depth)
+		}
+		visited.Add(1)
+	}, func(string) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if visited.Load() < 3 {
+		t.Fatalf("reported %d visited directories, want at least root/group/repo", visited.Load())
 	}
 }

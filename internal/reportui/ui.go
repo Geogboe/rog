@@ -177,6 +177,9 @@ func (m model) View() string {
 
 func (m model) content(width int) string {
 	var b strings.Builder
+	if m.doc.CoverageExplanation != "" {
+		fmt.Fprintf(&b, "COVERAGE EXPLANATION\n%s\n\n", sanitize(m.doc.CoverageExplanation))
+	}
 	label := func(s string) string {
 		if m.color {
 			return "\x1b[1;36m" + s + "\x1b[0m"
@@ -220,7 +223,8 @@ func (m model) content(width int) string {
 		}
 	case 1:
 		fmt.Fprintf(&b, "%s  Top %d of %d active projects\n", label("DASHBOARD"), len(m.doc.DashboardProjects()), m.doc.ActiveCount())
-		b.WriteString("Ranked by active days, commits, then changed paths.\nThese numbers do not measure hours worked.\n\n")
+		fmt.Fprintf(&b, "Coverage: %d indexed → %d grouped · %d with matching commits · %d with current edits · %d unavailable.\n", m.doc.Coverage.IndexedRepositories, m.doc.Coverage.GroupedProjects, m.doc.Coverage.ProjectsWithCommits, m.doc.Coverage.ProjectsWithCurrentChanges, m.doc.Coverage.UnavailableProjects)
+		b.WriteString("Commits match the date range and author email; current edits are undated. Ranked by active days, commits, then changed paths. These numbers do not measure hours worked.\n\n")
 		for _, p := range m.doc.DashboardProjects() {
 			if width < 72 {
 				fmt.Fprintf(&b, "%s\n  %d days · %d commits · %d paths · +%d/−%d lines · %d current\n", label(sanitize(p.Name)), p.Metrics.ActiveDays, p.Metrics.Commits, p.Metrics.ChangedPaths, p.Metrics.Additions, p.Metrics.Deletions, p.Metrics.CurrentChangedPaths)

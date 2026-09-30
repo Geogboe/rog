@@ -27,9 +27,9 @@ import (
 )
 
 var (
-	reportSince, reportUntil, reportOutput, reportView, reportFile, reportProgressMode string
-	reportEmails                                                                       []string
-	reportOpen, reportLLM, reportApproveWorker                                         bool
+	reportSince, reportUntil, reportOutput, reportView, reportFile, reportProgressMode, reportExplain string
+	reportEmails                                                                                      []string
+	reportOpen, reportLLM, reportApproveWorker                                                        bool
 )
 
 var reportCmd = &cobra.Command{
@@ -45,6 +45,7 @@ func init() {
 	reportCmd.Flags().StringSliceVar(&reportEmails, "author-email", nil, "Author email override (repeatable)")
 	reportCmd.Flags().StringVarP(&reportOutput, "output", "o", "", "Output: markdown, json, html; defaults to terminal tabs or Markdown when redirected")
 	reportCmd.Flags().StringVar(&reportView, "view", "", "Markdown view: weekly, dashboard, log, ai; default includes all")
+	reportCmd.Flags().StringVar(&reportExplain, "explain", "", "Explain why a project is included or missing from this report")
 	reportCmd.Flags().StringVar(&reportFile, "file", "", "Write export atomically to this file")
 	reportCmd.Flags().StringVar(&reportProgressMode, "progress", "", "Progress mode: auto, rich, plain, off")
 	reportCmd.Flags().BoolVar(&reportOpen, "open", false, "Save an HTML report and open it in the browser; optional directory or .html path")
@@ -114,6 +115,8 @@ func runReport(cmd *cobra.Command, args []string) error {
 	var local []*index.Repo
 	wslRepos := map[string][]*index.Repo{}
 	var windowsRepos []*index.Repo
+	eligibleIndexed := 0
+	unavailableRoots := 0
 	stale := 0
 	for _, repo := range idx.List() {
 		root, ok := roots[repo.Root]
@@ -123,10 +126,13 @@ func runReport(cmd *cobra.Command, args []string) error {
 		}
 		if repo.IsWSL && runtime.GOOS == "windows" {
 			wslRepos[repo.WSLDistro] = append(wslRepos[repo.WSLDistro], repo)
+			eligibleIndexed++
 		} else if repo.IsWindows && runtime.GOOS == "linux" {
 			windowsRepos = append(windowsRepos, repo)
+			eligibleIndexed++
 		} else {
 			local = append(local, repo)
+			eligibleIndexed++
 		}
 	}
 	if stale > 0 {
@@ -184,6 +190,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		}})
 		if err != nil {
 			d.Warnings = append(d.Warnings, fmt.Sprintf("WSL %s: %v", distro, err))
+			unavailableRoots += len(repos)
 			continue
 		}
 		d.Projects = append(d.Projects, remoteProjects...)
@@ -202,6 +209,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 		remoteProjects, remoteWarnings, err := (windowsbridge.Bridge{}).Report(ctx, windowsRoots, windowsRepos, report.Options{Since: since, Until: until, AuthorEmails: emails, IncludePatches: reportLLM && cfg.LLM != nil, OnProgress: func(done, total int, _ string) { tracker.Advance(done, total, "") }})
 		if err != nil {
 			d.Warnings = append(d.Warnings, fmt.Sprintf("Windows: %v", err))
+			unavailableRoots += len(windowsRepos)
 		} else {
 			d.Projects = append(d.Projects, remoteProjects...)
 			for _, warning := range remoteWarnings {
@@ -214,10 +222,27 @@ func runReport(cmd *cobra.Command, args []string) error {
 			d.Warnings = append(d.Warnings, fmt.Sprintf("%s: %s", p.Name, w))
 		}
 	}
+	d.Coverage.UnavailableProjects += unavailableRoots
 	if len(d.Warnings) > 0 {
 		d.Complete = false
 	}
 	report.SortProjects(d.Projects)
+	d.Coverage.IndexedRepositories = eligibleIndexed
+	d.Coverage.GroupedProjects = len(d.Projects)
+	for _, p := range d.Projects {
+		if len(p.Commits) > 0 {
+			d.Coverage.ProjectsWithCommits++
+		}
+		if p.Metrics.CurrentChangedPaths > 0 {
+			d.Coverage.ProjectsWithCurrentChanges++
+		}
+		if len(p.Warnings) > 0 {
+			d.Coverage.UnavailableProjects++
+		}
+	}
+	if reportExplain != "" {
+		d.CoverageExplanation = report.ExplainCoverage(reportExplain, cfg, idx.List(), d)
+	}
 	d.CollectionMS = time.Since(start).Milliseconds()
 	if ctx.Err() != nil {
 		return &reportExitError{code: 130}

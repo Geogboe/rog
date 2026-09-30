@@ -30,8 +30,8 @@ go install github.com/Geogboe/rog@latest
 # 1. Initialize configuration
 rog init
 
-# 2. Edit config to add your project roots
-vi ~/.config/rog/config.yml
+# 2. Walk through repository discovery and configure roots
+rog setup
 
 # 3. Scan your repositories
 rog scan
@@ -60,6 +60,32 @@ rog init
 ```
 
 This creates a basic config that you should customize with your actual project directories.
+
+### `rog setup`
+
+Run a terminal wizard to inspect the current config and index, choose the local
+filesystem and optional WSL or Windows sources, edit directory exclusions,
+discover and validate Git repositories, choose suggested Configured Roots and
+scan depths, review recent commit author emails, and preview the config before
+applying it. The wizard searches fixed local drives (Windows) or the local
+filesystem (Linux/WSL), uses bounded workers, and does not run Git status or read
+repository files. Directory symlinks, OS-managed locations, caches, and
+configured excludes are skipped. Discovery may take a while on a large
+filesystem; Ctrl+C cancels without saving.
+
+Each rog installation maintains its own config and index. Windows can include
+selected registered WSL distros; WSL can include configured Windows roots through
+the Windows worker. A selected WSL distro starts when discovery begins. If its
+matching worker is unavailable, setup reports that root as unavailable and does
+not install a worker. The initial scan is a separate optional step after config
+application.
+
+Setup previews the selected roots, depth, exclusions, report emails, coverage
+estimate, warnings, and the timestamped backup path. It backs up the previous
+config in `setup-history/`, retains five revisions, and supports previewed
+restore with `rog setup --rollback`. Backups use restrictive permissions. A
+noninteractive terminal can use `rog init` for a starter configuration, then
+run setup in a terminal.
 
 ### `rog scan`
 
@@ -175,6 +201,7 @@ rog report -o html --file work.html --open
 rog report --open .             # Save a new HTML report here and open it
 rog report --open               # Save to a temporary HTML file and open it
 rog report --llm -o html --file work-with-ai.html
+rog report --explain rog --since 2026-09-01
 ```
 
 Redirected output defaults to Markdown. `--since` is inclusive; a date-only
@@ -203,6 +230,12 @@ recent repository. Use `--progress plain` for occasional log lines or
 evidence, include warnings, and exit with code 2.
 Ctrl+C exits with code 130. JSON contains the full warning list; the human
 views show a short warning summary.
+The Dashboard also shows eligible indexed repositories, grouped projects,
+projects with matching commits or current edits, and unavailable projects. Use
+`--explain <project-or-path>` to see whether a project is indexed, filtered by
+the date or author email, outside a Configured Root, beyond its scan depth, or
+excluded. This command gathers the report evidence before explaining it, so it
+has the same collection cost as a normal report.
 
 AI Summary is opt-in (`--llm` or the terminal Generate action). Rog sends bounded
 commit metadata and selected committed patch hunks to the configured endpoint;

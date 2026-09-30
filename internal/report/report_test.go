@@ -29,6 +29,58 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
+func TestExplainCoverageDistinguishesReportFiltersAndDiscovery(t *testing.T) {
+	root := t.TempDir()
+	repoPath := filepath.Join(root, "projects", "group", "repo")
+	cfg := &config.Config{Roots: []config.Root{{Name: "projects", Path: filepath.Join(root, "projects"), MaxDepth: 2}}}
+	repo := &index.Repo{Name: "repo", AbsPath: repoPath, Root: "projects"}
+	d := Document{Projects: []Project{{Name: "repo", Paths: []string{repoPath}}}}
+	msg := ExplainCoverage("repo", cfg, []*index.Repo{repo}, d)
+	if !strings.Contains(msg, "--since") || !strings.Contains(msg, "--author-email") {
+		t.Fatalf("unexpected filter explanation: %s", msg)
+	}
+	tooDeep := filepath.Join(root, "projects", "a", "b", "c")
+	msg = ExplainCoverage(tooDeep, cfg, nil, Document{})
+	if !strings.Contains(msg, "beyond max_depth 2") {
+		t.Fatalf("unexpected depth explanation: %s", msg)
+	}
+	msg = ExplainCoverage(filepath.Join(root, "other", "repo"), cfg, nil, Document{})
+	if !strings.Contains(msg, "outside the current Configured Roots") {
+		t.Fatalf("unexpected root explanation: %s", msg)
+	}
+}
+
+func TestExplainCoverageReportsDashboardLimitAndGlobalExclusion(t *testing.T) {
+	root := t.TempDir()
+	projectsRoot := filepath.Join(root, "projects")
+	cfg := &config.Config{Roots: []config.Root{{Name: "projects", Path: projectsRoot, MaxDepth: 4}}, GlobalExcludes: []string{"node_modules"}}
+	var d Document
+	for i := 0; i < 51; i++ {
+		name := fmt.Sprintf("project-%02d", i)
+		projectPath := filepath.Join(projectsRoot, name)
+		d.Projects = append(d.Projects, Project{Name: name, Paths: []string{projectPath}, Metrics: Metrics{Commits: 1, ActiveDays: 1}, Commits: []Commit{{Hash: fmt.Sprintf("%040x", i+1)}}})
+	}
+	SortProjects(d.Projects)
+	target := d.Projects[50]
+	indexed := &index.Repo{Name: target.Name, AbsPath: target.Paths[0], Root: "projects"}
+	message := ExplainCoverage(target.Name, cfg, []*index.Repo{indexed}, d)
+	if !strings.Contains(message, "omitted from the Dashboard") {
+		t.Fatalf("display-limit explanation missing: %s", message)
+	}
+	message = ExplainCoverage(filepath.Join(projectsRoot, "node_modules", "missing"), cfg, nil, Document{})
+	if !strings.Contains(message, "excluded folder node_modules") {
+		t.Fatalf("global exclusion explanation missing: %s", message)
+	}
+	marker := filepath.Join(projectsRoot, "old", "repo")
+	if err := os.MkdirAll(filepath.Join(marker, ".git"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	message = ExplainCoverage(marker, cfg, nil, Document{})
+	if !strings.Contains(message, "Git marker found") {
+		t.Fatalf("invalid marker explanation missing: %s", message)
+	}
+}
+
 func TestAIEvidenceBudgetAndReferenceValidation(t *testing.T) {
 	d := Document{Since: time.Now().Add(-time.Hour), Until: time.Now(), Complete: true}
 	for i := 0; i < 753; i++ {

@@ -19,6 +19,7 @@ import (
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/metadata"
 	"github.com/Geogboe/rog/internal/scanner"
+	"github.com/Geogboe/rog/internal/setup"
 	"github.com/Geogboe/rog/internal/workerbundle"
 	"github.com/Geogboe/rog/internal/workerproto"
 	"github.com/Geogboe/rog/internal/wsl"
@@ -218,6 +219,120 @@ func (b Bridge) Scan(ctx context.Context, roots []config.Root, excludes []string
 	}
 	return scanner.WSLResult{Repos: response.Repos, Found: response.Found, Candidates: response.Candidates, Reused: response.Reused, Refreshed: response.Refreshed, StatusUnavailable: response.StatusUnavailable, StatusTimeouts: response.StatusTimeouts,
 		Discovery: time.Duration(response.DiscoveryNanos), Git: time.Duration(response.GitNanos), Metadata: time.Duration(response.MetadataNanos), CompleteRoots: response.CompleteRoots, Warnings: response.Warnings}, nil
+}
+
+// Discover asks a matching, already installed Linux worker to validate Git
+// markers in the selected distro. Setup never installs a worker implicitly.
+func (b Bridge) Discover(ctx context.Context, roots []config.Root, excludes []string, progress func(string, string, int, int)) (setup.DiscoveryResult, error) {
+	if runtime.GOOS != "windows" {
+		return setup.DiscoveryResult{}, fmt.Errorf("WSL discovery bridge requires Windows")
+	}
+	if len(roots) == 0 {
+		return setup.DiscoveryResult{}, nil
+	}
+	distro := roots[0].WSLDistro
+	binary, checksum, err := workerbundle.LinuxAMD64()
+	if err != nil {
+		return setup.DiscoveryResult{}, err
+	}
+	_ = binary
+	payload, err := json.Marshal(workerproto.Request{Version: workerproto.Version, Operation: "discover", DiscoveryRoots: toSearchRoots(roots), DiscoveryExcludes: excludes})
+	if err != nil {
+		return setup.DiscoveryResult{}, err
+	}
+	const script = `cache="${XDG_CACHE_HOME:-$HOME/.cache}/rog/workers/$1"; worker="$cache/rog-worker"; if [ ! -x "$worker" ]; then printf 'ROG_WORKER_MISSING:%s\n' "$worker" >&2; exit 72; fi; printf 'ROG_WORKER_READY\n'; exec "$worker"`
+	cmd := wsl.ExecInDistroContext(ctx, distro, "sh", "-c", script, "rog-setup", checksum[:16])
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return setup.DiscoveryResult{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return setup.DiscoveryResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return setup.DiscoveryResult{}, err
+	}
+	lines := bufio.NewScanner(stdout)
+	lines.Buffer(make([]byte, 64*1024), 32<<20)
+	if !lines.Scan() || lines.Text() != "ROG_WORKER_READY" {
+		_ = stdin.Close()
+		waitErr := cmd.Wait()
+		if waitErr == nil {
+			waitErr = fmt.Errorf("unexpected WSL worker handshake")
+		}
+		return setup.DiscoveryResult{}, fmt.Errorf("WSL worker in %s unavailable: %w: %s", distro, waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if _, err := stdin.Write(payload); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return setup.DiscoveryResult{}, err
+	}
+	if err := stdin.Close(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return setup.DiscoveryResult{}, err
+	}
+	var result setup.DiscoveryResult
+	got := false
+	protocolVersion := 0
+	var decodeErr error
+	for lines.Scan() {
+		var event workerproto.Event
+		if err := json.Unmarshal(lines.Bytes(), &event); err != nil {
+			decodeErr = err
+			break
+		}
+		switch event.Type {
+		case "discovery_progress":
+			if p := event.DiscoveryProgress; p != nil && progress != nil {
+				progress(p.Root, p.Name, p.Completed, p.Total)
+			}
+		case "discovery_result":
+			if event.Result == nil || event.Result.Discovery == nil {
+				decodeErr = fmt.Errorf("empty WSL discovery result")
+			} else {
+				protocolVersion = event.Result.Version
+				result = *event.Result.Discovery
+				got = true
+			}
+		default:
+			decodeErr = fmt.Errorf("unexpected WSL discovery event %q", event.Type)
+		}
+		if decodeErr != nil {
+			break
+		}
+	}
+	if decodeErr == nil {
+		decodeErr = lines.Err()
+	}
+	if decodeErr != nil {
+		_ = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+	if decodeErr != nil {
+		return result, decodeErr
+	}
+	if waitErr != nil {
+		return result, fmt.Errorf("WSL discovery worker %s: %w: %s", distro, waitErr, strings.TrimSpace(stderr.String()))
+	}
+	if !got {
+		return result, fmt.Errorf("WSL discovery worker exited without a result")
+	}
+	if protocolVersion != workerproto.Version {
+		return result, fmt.Errorf("WSL discovery protocol %d, need %d", protocolVersion, workerproto.Version)
+	}
+	return result, nil
+}
+
+func toSearchRoots(roots []config.Root) []setup.SearchRoot {
+	out := make([]setup.SearchRoot, 0, len(roots))
+	for _, r := range roots {
+		out = append(out, setup.SearchRoot{Name: r.Name, Path: r.Path, WSL: true, Distro: r.WSLDistro})
+	}
+	return out
 }
 
 const installScript = `set -eu; cache="${XDG_CACHE_HOME:-$HOME/.cache}/rog/workers/$1"; mkdir -p "$cache"; tmp=$(mktemp "$cache/.worker.XXXXXX"); trap 'rm -f "$tmp"' EXIT; cat > "$tmp"; actual=$(sha256sum "$tmp"); actual=${actual%% *}; [ "$actual" = "$2" ]; chmod 700 "$tmp"; mv -f "$tmp" "$cache/rog-worker"`

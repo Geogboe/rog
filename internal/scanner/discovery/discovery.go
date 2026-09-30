@@ -13,6 +13,12 @@ import (
 // Walk discovers Git marker parents under root. Work is bounded by the worker
 // count and job buffer. Callbacks may run concurrently.
 func Walk(ctx context.Context, root string, maxDepth int, excluded func(string, string) bool, found func(string) error) error {
+	return WalkWithProgress(ctx, root, maxDepth, excluded, nil, found)
+}
+
+// WalkWithProgress additionally reports each directory as traversal reaches it.
+// The callback may run concurrently and should not perform blocking work.
+func WalkWithProgress(ctx context.Context, root string, maxDepth int, excluded func(string, string) bool, onDirectory func(string, int), found func(string) error) error {
 	if maxDepth < 0 {
 		return fmt.Errorf("negative max depth: %d", maxDepth)
 	}
@@ -56,6 +62,9 @@ func Walk(ctx context.Context, root string, maxDepth int, excluded func(string, 
 		defer tasks.Done()
 		if ctx.Err() != nil {
 			return
+		}
+		if onDirectory != nil {
+			onDirectory(current.path, current.depth)
 		}
 		dir, err := os.Open(current.path)
 		if err != nil {

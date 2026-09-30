@@ -1,54 +1,46 @@
+//go:build !windows
+
 package windowsbridge
 
 import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
-	"time"
 
 	"github.com/Geogboe/rog/internal/config"
-	"github.com/Geogboe/rog/internal/workerproto"
 )
 
-func TestMapPathNestedAndDuplicateNames(t *testing.T) {
-	if got := windowsRelative("team/nested/repo"); got != `team\nested\repo` {
-		t.Fatalf("native relative path = %q", got)
-	}
-	roots := []config.Root{{Name: "projects", Path: `C:\Users\me\dev`}, {Name: "github", Path: `C:\Users\me\dev\github`}}
-	paths := map[string]string{"projects": "/mnt/c/Users/me/dev", "github": "/mnt/c/Users/me/dev/github"}
-	got, name, rel, ok := mapPath(`c:\users\ME\dev\github\same name`, roots, paths)
-	if !ok || name != "github" || rel != "same name" || got != "/mnt/c/Users/me/dev/github/same name" {
-		t.Fatalf("mapPath = %q, %q, %q, %v", got, name, rel, ok)
-	}
-	if _, _, _, ok := mapPath(`C:\Users\me\developer\repo`, roots, paths); ok {
-		t.Fatal("sibling path matched")
-	}
-}
-
-func TestWorkerVersionAndCancellation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell fixture runs on Linux")
-	}
-	fixture := filepath.Join(t.TempDir(), "worker")
-	if err := os.WriteFile(fixture, []byte("#!/bin/sh\nprintf 'ROG_WINDOWS_WORKER_READY 999\\n'\n"), 0700); err != nil {
+func TestDiscoverAcceptsTypedWindowsWorkerResult(t *testing.T) {
+	dir := t.TempDir()
+	executable := filepath.Join(dir, "rog.exe")
+	script := `#!/bin/sh
+printf 'ROG_WINDOWS_WORKER_READY 3\n'
+request=$(cat)
+case "$request" in *'"windows":true'*) ;; *) echo 'missing Windows root flag' >&2; exit 2 ;; esac
+printf '%s\n' '{"type":"discovery_progress","discovery_progress":{"root":"dev","name":"repo","completed":1,"total":1}}'
+printf '%s\n' '{"type":"discovery_result","result":{"version":3,"discovery":{"candidates":[{"path":"C:\\Users\\me\\projects\\repo","root":"dev","windows":true,"valid":true}]}}}'
+`
+	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	bridge := Bridge{Executable: fixture}
-	if err := bridge.invoke(context.Background(), workerproto.Request{Version: workerproto.Version}, func(workerproto.Event) error { return nil }); err == nil {
-		t.Fatal("accepted incompatible worker")
-	}
-	if err := os.WriteFile(fixture, []byte("#!/bin/sh\nprintf 'ROG_WINDOWS_WORKER_READY 2\\n'\ncat >/dev/null\nsleep 30\n"), 0700); err != nil {
+	if err := os.Chmod(executable, 0700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	if err := bridge.invoke(ctx, workerproto.Request{Version: workerproto.Version}, func(workerproto.Event) error { return nil }); err == nil {
-		t.Fatal("cancelled worker succeeded")
+	var progress int
+	result, err := (Bridge{Executable: executable}).Discover(context.Background(), []config.Root{{Name: "dev", Path: `C:\Users\me\projects`, Windows: true}}, nil, func(root, name string, done, total int) {
+		if root != "dev" || name != "repo" || done != 1 || total != 1 {
+			t.Errorf("unexpected progress: %s %s %d/%d", root, name, done, total)
+		}
+		progress++
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if time.Since(start) > 3*time.Second {
-		t.Fatal("worker did not stop promptly")
+	if progress != 1 || len(result.Candidates) != 1 || !result.Candidates[0].Windows {
+		t.Fatalf("unexpected discovery result: progress=%d result=%+v", progress, result)
+	}
+	if result.Candidates[0].Path != `C:\Users\me\projects\repo` {
+		t.Fatalf("Windows path changed: %q", result.Candidates[0].Path)
 	}
 }

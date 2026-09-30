@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 // IsAvailable checks if WSL is available (Windows only)
@@ -21,6 +22,35 @@ func IsAvailable() bool {
 	defer cancel()
 	cmd := hiddenCommandContext(ctx, "--list", "--quiet")
 	return cmd.Run() == nil
+}
+
+// ListDistros returns registered distributions without starting them.
+func ListDistros() ([]string, error) {
+	if !IsAvailable() {
+		return nil, fmt.Errorf("WSL is not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := hiddenCommandContext(ctx, "--list", "--quiet").Output()
+	if err != nil {
+		return nil, fmt.Errorf("list WSL distributions: %w", err)
+	}
+	if len(out)%2 != 0 {
+		out = out[:len(out)-1]
+	}
+	words := make([]uint16, 0, len(out)/2)
+	for i := 0; i+1 < len(out); i += 2 {
+		words = append(words, uint16(out[i])|uint16(out[i+1])<<8)
+	}
+	text := strings.TrimPrefix(strings.ReplaceAll(string(utf16.Decode(words)), "\x00", ""), "\ufeff")
+	var distros []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "*"))
+		if line != "" {
+			distros = append(distros, line)
+		}
+	}
+	return distros, nil
 }
 
 // DistroExists checks if a specific WSL distro exists
