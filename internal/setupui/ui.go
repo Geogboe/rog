@@ -73,6 +73,7 @@ type model struct {
 	discover            DiscoverFunc
 	step, cursor, width int
 	color               bool
+	showReviewDetails   bool
 	busy                bool
 	result              setup.DiscoveryResult
 	suggestions         []setup.RootSuggestion
@@ -379,6 +380,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finished = true
 			return m, tea.Quit
 		}
+		if m.step == 0 && key == "d" {
+			m.showReviewDetails = !m.showReviewDetails
+			return m, nil
+		}
 		if m.addingLocation {
 			switch key {
 			case "esc":
@@ -659,17 +664,42 @@ func (m model) View() string {
 	b.WriteByte('\n')
 	switch m.step {
 	case 0:
-		fmt.Fprintf(&b, "Config: %s\nConfigured Roots: %d\n", m.path, len(m.config.Roots))
-		indexDate := "never"
-		if !m.indexSummary.UpdatedAt.IsZero() {
-			indexDate = m.indexSummary.UpdatedAt.Format("2006-01-02 15:04")
+		if m.showReviewDetails {
+			b.WriteString("\nCURRENT CONFIGURATION\n")
+			writeWrapped(&b, "Config file: "+m.path, m.width)
+			b.WriteString("\nConfigured Roots\n")
+			for _, r := range m.config.Roots {
+				fmt.Fprintf(&b, "  • %s · depth %d\n", r.Name, r.MaxDepth)
+				writeWrapped(&b, r.Path, m.width)
+				b.WriteByte('\n')
+			}
+			indexSummary := fmt.Sprintf("Index: %d repositories", m.indexSummary.Count)
+			if m.indexSummary.UpdatedAt.IsZero() {
+				indexSummary += " · never scanned"
+			} else {
+				indexSummary += " · updated " + m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04")
+			}
+			writeWrapped(&b, indexSummary, m.width)
+			b.WriteByte('\n')
+			writeWrapped(&b, "Cross-OS bridge: "+m.indexSummary.BridgeStatus, m.width)
+			fmt.Fprintf(&b, "\nExclusions (%d):\n", len(m.excludes))
+			writeWrapped(&b, strings.Join(m.excludes, ", "), m.width)
+		} else {
+			b.WriteString("\nBuild your repository map\n\n")
+			writeWrapped(&b, "Choose where rog should look. It finds Git repositories, suggests Configured Roots, and checks report author matching.", m.width)
+			b.WriteString("\n\nCURRENT COVERAGE\n")
+			rootLabel := "Configured Roots"
+			if len(m.config.Roots) == 1 {
+				rootLabel = "Configured Root"
+			}
+			fmt.Fprintf(&b, "%d %s · %d repositories indexed\n", len(m.config.Roots), rootLabel, m.indexSummary.Count)
+			if m.indexSummary.UpdatedAt.IsZero() {
+				b.WriteString("Last scan: never\n")
+			} else {
+				fmt.Fprintf(&b, "Last scan: %s\n", m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04"))
+			}
+			b.WriteString("\nNothing changes until you apply the preview.\n")
 		}
-		fmt.Fprintf(&b, "Index: %d repositories · updated %s\nBridge: %s\n", m.indexSummary.Count, indexDate, m.indexSummary.BridgeStatus)
-		for _, r := range m.config.Roots {
-			fmt.Fprintf(&b, "  • %s  %s  depth %d\n", r.Name, r.Path, r.MaxDepth)
-		}
-		fmt.Fprintf(&b, "Exclusions: %s\n", strings.Join(m.excludes, ", "))
-		b.WriteString("\nSetup searches for Git repositories, suggests roots and depths, and checks report author matching. Nothing changes until the final Apply step.\nPress Enter to review environments.\n")
 	case 1:
 		b.WriteString("The local filesystem roots below are searched by default. Other operating systems use their rog worker; setup does not walk a mounted share.\n\n")
 		totalRoots := len(m.local) + len(m.external)
@@ -852,9 +882,40 @@ func (m model) View() string {
 		fmt.Fprintf(&b, "%s\n\nPress s to run rog scan now, or r to finish and run it later.\n", m.status)
 	}
 	if m.step != 7 {
-		b.WriteString("\nTab/Enter next · b back · Ctrl+C cancel")
+		if m.step == 0 {
+			if m.showReviewDetails {
+				b.WriteString("\nd hide · Enter start · Ctrl+C cancel")
+			} else {
+				b.WriteString("\nEnter start · d config · Ctrl+C cancel")
+			}
+		} else {
+			b.WriteString("\nEnter next · b back · Ctrl+C cancel")
+		}
 	}
 	return fitTerminal(b.String(), m.width, m.color)
+}
+
+func writeWrapped(b *strings.Builder, value string, width int) {
+	if width <= 0 {
+		width = 80
+	}
+	var line strings.Builder
+	for _, word := range strings.Fields(value) {
+		if line.Len() == 0 {
+			line.WriteString(word)
+			continue
+		}
+		if ansi.StringWidth(line.String())+1+ansi.StringWidth(word) > width {
+			b.WriteString(line.String())
+			b.WriteByte('\n')
+			line.Reset()
+			line.WriteString(word)
+			continue
+		}
+		line.WriteByte(' ')
+		line.WriteString(word)
+	}
+	b.WriteString(line.String())
 }
 
 func writeRule(b *strings.Builder, width int) {
@@ -893,6 +954,8 @@ func styleTerminalLine(line string, color bool) string {
 		}
 	case strings.HasPrefix(line, "─"):
 		return ansiStyle("2", line)
+	case line == "Build your repository map" || line == "CURRENT COVERAGE" || line == "CURRENT CONFIGURATION":
+		return ansiStyle("1;36", line)
 	case strings.HasPrefix(line, "  • "):
 		item := strings.TrimPrefix(line, "  • ")
 		nameEnd := strings.Index(item, "  ")
@@ -917,7 +980,7 @@ func styleTerminalLine(line string, color bool) string {
 		return ansiStyle("1;36", line)
 	case strings.HasPrefix(line, "Tab/Enter") || strings.HasPrefix(line, "Press ") || strings.HasPrefix(line, "Space ") || strings.HasPrefix(line, "Up/Down ") || strings.HasPrefix(line, "Ctrl+C") || strings.HasPrefix(line, "Enter "):
 		return ansiStyle("2", line)
-	case strings.HasPrefix(line, "The local filesystem") || strings.HasPrefix(line, "Directory names") || strings.HasPrefix(line, "A depth of ") || strings.HasPrefix(line, "Reports match ") || strings.HasPrefix(line, "Setup searches ") || strings.HasPrefix(line, "Other saved YAML"):
+	case strings.HasPrefix(line, "The local filesystem") || strings.HasPrefix(line, "Directory names") || strings.HasPrefix(line, "A depth of ") || strings.HasPrefix(line, "Reports match ") || strings.HasPrefix(line, "Setup searches ") || strings.HasPrefix(line, "Other saved YAML") || strings.HasPrefix(line, "Nothing changes until"):
 		return ansiStyle("2", line)
 	}
 	for _, label := range []string{"Config:", "Configured Roots:", "Index:", "Bridge:", "Exclusions:", "Coverage estimate:", "Report author emails:", "Additional local search path:", "Add excluded directory name:", "Add email:", "Current Configured Roots", "Restored Configured Roots", "Current config backup:"} {

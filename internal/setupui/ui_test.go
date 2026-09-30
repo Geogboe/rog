@@ -45,6 +45,40 @@ func TestWizardBackAndCancelLeavesConfigAlone(t *testing.T) {
 	}
 }
 
+func TestReviewPageStartsConciseAndCanShowConfigurationDetails(t *testing.T) {
+	m := model{
+		step: 0, width: 44, path: "/home/george/.config/rog/config.yml",
+		config:       &config.Config{Roots: []config.Root{{Name: "projects", Path: "/home/george/dev/projects", MaxDepth: 4}}},
+		excludes:     []string{"node_modules", "vendor", "dist"},
+		indexSummary: IndexSummary{Count: 753, BridgeStatus: "available"},
+	}
+	initial := ansi.Strip(m.View())
+	for _, expected := range []string{"Build your repository map", "CURRENT COVERAGE", "1 Configured Root · 753 repositories indexed", "Enter start · d config · Ctrl+C cancel", "Nothing changes until you apply the preview."} {
+		if !strings.Contains(initial, expected) {
+			t.Fatalf("concise review page is missing %q:\n%s", expected, initial)
+		}
+	}
+	for _, hidden := range []string{"/home/george/.config/rog/config.yml", "/home/george/dev/projects", "node_modules", "vendor", "Cross-OS bridge:"} {
+		if strings.Contains(initial, hidden) {
+			t.Fatalf("review details %q should be collapsed by default:\n%s", hidden, initial)
+		}
+	}
+	for _, line := range strings.Split(initial, "\n") {
+		if width := ansi.StringWidth(line); width > m.width {
+			t.Fatalf("review line width %d exceeds terminal width %d: %q", width, m.width, line)
+		}
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	m = next.(model)
+	details := ansi.Strip(m.View())
+	for _, expected := range []string{"CURRENT CONFIGURATION", "/home/george/.config/rog/config.yml", "/home/george/dev/projects", "node_modules", "vendor", "Cross-OS bridge:", "d hide"} {
+		if !strings.Contains(details, expected) {
+			t.Fatalf("expanded review page is missing %q:\n%s", expected, details)
+		}
+	}
+}
+
 func TestWizardTextEntryAcceptsUnicodeAndSpaces(t *testing.T) {
 	m := model{addingEmail: true, config: config.DefaultConfig(), selectedEmails: map[string]bool{}}
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("jane é@example.test")})
