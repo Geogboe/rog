@@ -56,9 +56,12 @@ func PreviewConfig(original []byte, next *config.Config) ([]byte, error) {
 		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, node.Content[0])
 		return nil
 	}
+	oldRoots := mappingValue(root, "roots")
+	oldReport := mappingValue(root, "report")
 	if err := set("roots", next.Roots); err != nil {
 		return nil, err
 	}
+	preserveRootExtras(oldRoots, mappingValue(root, "roots"))
 	if next.GlobalExcludes != nil {
 		if err := set("global_excludes", next.GlobalExcludes); err != nil {
 			return nil, err
@@ -68,6 +71,9 @@ func PreviewConfig(original []byte, next *config.Config) ([]byte, error) {
 		if err := set("report", next.Report); err != nil {
 			return nil, err
 		}
+		preserveUnknownFields(oldReport, mappingValue(root, "report"), map[string]bool{
+			"author_emails": true, "input_usd_per_million": true, "output_usd_per_million": true,
+		})
 	}
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
@@ -79,6 +85,61 @@ func PreviewConfig(original []byte, next *config.Config) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func preserveUnknownFields(old, next *yaml.Node, known map[string]bool) {
+	if old == nil || next == nil || old.Kind != yaml.MappingNode || next.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i+1 < len(old.Content); i += 2 {
+		key := old.Content[i].Value
+		if !known[key] && mappingValue(next, key) == nil {
+			next.Content = append(next.Content, old.Content[i], old.Content[i+1])
+		}
+	}
+}
+
+func preserveRootExtras(old, next *yaml.Node) {
+	if old == nil || next == nil || old.Kind != yaml.SequenceNode || next.Kind != yaml.SequenceNode {
+		return
+	}
+	known := map[string]bool{"name": true, "path": true, "max_depth": true, "exclude": true, "wsl": true, "wsl_distro": true, "windows": true}
+	identity := func(node *yaml.Node) string {
+		return strings.Join([]string{
+			nodeValue(node, "name"), nodeValue(node, "path"), nodeValue(node, "wsl"),
+			nodeValue(node, "wsl_distro"), nodeValue(node, "windows"),
+		}, "\x00")
+	}
+	byIdentity := make(map[string]*yaml.Node, len(old.Content))
+	for _, item := range old.Content {
+		if item.Kind == yaml.MappingNode {
+			byIdentity[identity(item)] = item
+		}
+	}
+	for _, item := range next.Content {
+		if item.Kind == yaml.MappingNode {
+			preserveUnknownFields(byIdentity[identity(item)], item, known)
+		}
+	}
+}
+
+func nodeValue(node *yaml.Node, key string) string {
+	if value := mappingValue(node, key); value != nil {
+		return value.Value
+	}
+	return ""
 }
 
 // ValidateSetupConfig checks values the wizard owns before any config write.

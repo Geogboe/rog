@@ -75,7 +75,10 @@ filesystem; Ctrl+C cancels without saving.
 
 Each rog installation maintains its own config and index. Windows can include
 selected registered WSL distros; WSL can include configured Windows roots through
-the Windows worker. A selected WSL distro starts when discovery begins. If its
+the Windows worker. From WSL, press `a` on the locations page to add a Windows
+drive path such as `C:\Users\me\dev`; rog runs discovery through the installed
+Windows `rog.exe`. An invalid or relative path stays editable and shows a
+correction. A selected WSL distro starts when discovery begins. If its
 matching worker is unavailable, setup reports that root as unavailable and does
 not install a worker. The initial scan is a separate optional step after config
 application.
@@ -83,7 +86,9 @@ application.
 Setup previews the selected roots, depth, exclusions, report emails, coverage
 estimate, warnings, and the timestamped backup path. It backs up the previous
 config in `setup-history/`, retains five revisions, and supports previewed
-restore with `rog setup --rollback`. Backups use restrictive permissions. A
+restore with `rog setup --rollback`. Backups use restrictive permissions. Setup
+preserves unknown YAML keys at the top level, under `report`, and within roots
+whose name, path, and owning environment remain the same. A
 noninteractive terminal can use `rog init` for a starter configuration, then
 run setup in a terminal.
 

@@ -405,11 +405,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.locationInput = ""
 			case "enter":
 				path := strings.TrimSpace(m.locationInput)
-				if filepath.IsAbs(path) {
-					root := setup.SearchRoot{Name: filepath.Base(path), Path: path}
-					m.local = append(m.local, root)
-					m.selected[searchRootKey(root)] = true
+				root, ok := addedSearchRoot(path)
+				if !ok {
+					m.status = "Enter an absolute local path or a Windows drive path such as C:\\Users\\me\\dev."
+					return m, nil
 				}
+				if root.Windows {
+					m.external = append(m.external, root)
+				} else {
+					m.local = append(m.local, root)
+				}
+				m.selected[searchRootKey(root)] = true
+				m.status = ""
 				m.addingLocation = false
 				m.locationInput = ""
 			case "backspace":
@@ -768,7 +775,10 @@ func (m model) View() string {
 			writeIndentedWrapped(&b, "    ", compactPath(r.Path, max(1, m.width-4)), m.width)
 		}
 		if m.addingLocation {
-			fmt.Fprintf(&b, "Additional local search path: %s_\n", m.locationInput)
+			fmt.Fprintf(&b, "Additional search path: %s_\n", m.locationInput)
+			if m.status != "" {
+				writeIndentedWrapped(&b, "  ! ", m.status, m.width)
+			}
 		}
 	case 2:
 		writeWrapped(&b, "Checked names are skipped during discovery. Built-in system and cache exclusions always apply.", m.width)
@@ -927,6 +937,30 @@ func (m model) View() string {
 	}
 	footer := m.actionBlock(strings.Count(b.String(), "\n")+1 > max(1, m.height-9))
 	return fitSetupViewport(header+b.String()+footer, m.width, m.color, m.height, m.scroll)
+}
+
+func addedSearchRoot(value string) (setup.SearchRoot, bool) {
+	if runtime.GOOS != "windows" && len(value) >= 3 &&
+		((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) &&
+		value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+		trimmed := strings.TrimRight(value, `\/`)
+		name := trimmed
+		if at := strings.LastIndexAny(trimmed, `\/`); at >= 0 {
+			name = trimmed[at+1:]
+		}
+		if name == "" || strings.HasSuffix(name, ":") {
+			name = "drive-" + strings.ToUpper(value[:1])
+		}
+		return setup.SearchRoot{Name: name, Path: value, Windows: true}, true
+	}
+	if filepath.IsAbs(value) {
+		name := filepath.Base(filepath.Clean(value))
+		if name == string(filepath.Separator) {
+			name = "filesystem"
+		}
+		return setup.SearchRoot{Name: name, Path: value}, true
+	}
+	return setup.SearchRoot{}, false
 }
 
 func (m model) actionBlock(previewScroll bool) string {

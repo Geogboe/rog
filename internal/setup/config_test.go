@@ -11,16 +11,28 @@ import (
 )
 
 func TestPreviewConfigPreservesUnmanagedKeys(t *testing.T) {
-	original := []byte("roots:\n  - name: old\n    path: /old\n    max_depth: 2\neditor: vi\ncustom_future_setting:\n  enabled: true\n")
-	next := &config.Config{Roots: []config.Root{{Name: "projects", Path: "/home/me/projects", MaxDepth: 4}}, GlobalExcludes: []string{".git"}}
+	original := []byte("roots:\n  - name: projects\n    path: /home/me/projects\n    max_depth: 2\n    future_root_option: retained\neditor: vi\nreport:\n  author_emails: [old@example.test]\n  future_report_option: retained\ncustom_future_setting:\n  enabled: true\n")
+	next := &config.Config{Roots: []config.Root{{Name: "projects", Path: "/home/me/projects", MaxDepth: 4}}, GlobalExcludes: []string{".git"}, Report: &config.ReportConfig{AuthorEmails: []string{"new@example.test"}}}
 	preview, err := PreviewConfig(original, next)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, needle := range []string{"editor: vi", "custom_future_setting:", "enabled: true", "name: projects", "max_depth: 4"} {
+	for _, needle := range []string{"editor: vi", "custom_future_setting:", "enabled: true", "name: projects", "max_depth: 4", "future_root_option: retained", "future_report_option: retained", "new@example.test"} {
 		if !strings.Contains(string(preview), needle) {
 			t.Fatalf("preview lost %q: %s", needle, preview)
 		}
+	}
+}
+
+func TestPreviewConfigDoesNotCarryUnknownRootKeyToDifferentRoot(t *testing.T) {
+	original := []byte("roots:\n  - name: old\n    path: /old\n    max_depth: 2\n    future_root_option: old-value\n")
+	next := &config.Config{Roots: []config.Root{{Name: "new", Path: "/new", MaxDepth: 2}}}
+	preview, err := PreviewConfig(original, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(preview), "future_root_option") {
+		t.Fatalf("unrelated root inherited prior settings: %s", preview)
 	}
 }
 

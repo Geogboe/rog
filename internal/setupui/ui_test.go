@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -89,6 +90,27 @@ func TestWizardTextEntryAcceptsUnicodeAndSpaces(t *testing.T) {
 	}
 	if m.out.Cancelled {
 		t.Fatal("typing q or Unicode must not cancel setup")
+	}
+}
+
+func TestAddWindowsLocationFromWSL(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows paths are native search locations on Windows")
+	}
+	m := model{step: 1, addingLocation: true, locationInput: `C:\Users\me\dev projects`, selected: map[string]bool{}}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(model)
+	if len(m.external) != 1 || !m.external[0].Windows || m.external[0].Name != "dev projects" || !m.selected[searchRootKey(m.external[0])] {
+		t.Fatalf("Windows path was not added as a selected bridge location: %+v", m)
+	}
+}
+
+func TestInvalidAddedLocationExplainsCorrection(t *testing.T) {
+	m := model{step: 1, addingLocation: true, locationInput: "relative/path", selected: map[string]bool{}}
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(model)
+	if !m.addingLocation || !strings.Contains(m.status, "absolute") || len(m.local)+len(m.external) != 0 {
+		t.Fatalf("invalid path should remain editable with an explanation: %+v", m)
 	}
 }
 
