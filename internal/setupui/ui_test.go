@@ -11,6 +11,7 @@ import (
 	"github.com/Geogboe/rog/internal/config"
 	"github.com/Geogboe/rog/internal/setup"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestWizardBackAndCancelLeavesConfigAlone(t *testing.T) {
@@ -101,6 +102,44 @@ func TestWizardShowsNestedRootsAndAccurateSelectedCoverage(t *testing.T) {
 		if !strings.Contains(view, expected) {
 			t.Fatalf("preview does not call out uncovered discovery %q:\n%s", expected, view)
 		}
+	}
+}
+
+func TestWizardColorAddsHierarchyWithoutChangingLayout(t *testing.T) {
+	m := model{
+		step: 4, width: 44,
+		config: config.DefaultConfig(),
+		result: setup.DiscoveryResult{Candidates: []setup.Candidate{{Path: "/home/me/projects/app"}}},
+		suggestions: []setup.RootSuggestion{{
+			Root: config.Root{Name: "projects", Path: "/home/me/projects", MaxDepth: 2}, Count: 1, Selected: true,
+		}},
+	}
+	plain := m.View()
+	m.color = true
+	colored := m.View()
+	if !strings.Contains(colored, "\x1b[1;36mROG SETUP") || !strings.Contains(colored, "\x1b[32m[✓]") || !strings.Contains(colored, "\x1b[2mSpace toggles") {
+		t.Fatalf("colored wizard is missing title, selection, or hint hierarchy:\n%q", colored)
+	}
+	if got := ansi.Strip(colored); got != plain {
+		t.Fatalf("color changed visible content\nplain:\n%s\ncolored:\n%s", plain, got)
+	}
+	for _, line := range strings.Split(colored, "\n") {
+		if width := ansi.StringWidth(line); width > m.width {
+			t.Fatalf("colored line width %d exceeds terminal width %d: %q", width, m.width, line)
+		}
+	}
+}
+
+func TestSetupColorRespectsNoColorAndDumbTerminal(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	if supportsColor() {
+		t.Fatal("NO_COLOR should disable wizard colors")
+	}
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "dumb")
+	if supportsColor() {
+		t.Fatal("TERM=dumb should disable wizard colors")
 	}
 }
 

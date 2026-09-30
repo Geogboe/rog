@@ -72,6 +72,7 @@ type model struct {
 	selectedExcludes    map[string]bool
 	discover            DiscoverFunc
 	step, cursor, width int
+	color               bool
 	busy                bool
 	result              setup.DiscoveryResult
 	suggestions         []setup.RootSuggestion
@@ -109,7 +110,7 @@ func Run(ctx context.Context, path string, cfg *config.Config, local, external [
 	if cfg == nil {
 		cfg = config.DefaultConfig()
 	}
-	m := model{ctx: ctx, config: cloneConfig(cfg), path: path, local: local, external: external, indexSummary: summary, discover: discover, selected: map[string]bool{}, selectedExcludes: map[string]bool{}, selectedEmails: map[string]bool{}, width: 80}
+	m := model{ctx: ctx, config: cloneConfig(cfg), path: path, local: local, external: external, indexSummary: summary, discover: discover, selected: map[string]bool{}, selectedExcludes: map[string]bool{}, selectedEmails: map[string]bool{}, width: 80, color: supportsColor()}
 	m.excludes = append([]string(nil), cfg.GlobalExcludes...)
 	for _, recommended := range setup.RecommendedExcludes() {
 		present := false
@@ -161,6 +162,7 @@ type rollbackModel struct {
 	revisions []string
 	selected  int
 	width     int
+	color     bool
 	preview   bool
 	finished  bool
 	saved     bool
@@ -185,7 +187,7 @@ func RunRollback(ctx context.Context, path string, revisions []string) (bool, bo
 		stdin, stderr = tty, tty
 		defer tty.Close()
 	}
-	m := rollbackModel{ctx: ctx, path: path, revisions: revisions, width: 80}
+	m := rollbackModel{ctx: ctx, path: path, revisions: revisions, width: 80, color: supportsColor()}
 	final, err := tea.NewProgram(m, tea.WithInput(stdin), tea.WithOutput(stderr), tea.WithAltScreen()).Run()
 	if err != nil {
 		return false, false, err
@@ -265,7 +267,9 @@ func (m rollbackModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 func (m rollbackModel) View() string {
 	var b strings.Builder
-	b.WriteString("ROG SETUP ROLLBACK\n\n")
+	b.WriteString("ROG SETUP  ·  ROLLBACK  ·  CONFIG HISTORY\n")
+	writeRule(&b, m.width)
+	b.WriteByte('\n')
 	if m.saved {
 		fmt.Fprintf(&b, "%s\n\nPress s to scan now, or r to finish and scan later.\n", m.status)
 	} else if m.preview && len(m.revisions) > 0 {
@@ -319,7 +323,7 @@ func (m rollbackModel) View() string {
 	if !m.saved {
 		b.WriteString("\nCtrl+C cancels")
 	}
-	return fitTerminal(b.String(), m.width)
+	return fitTerminal(b.String(), m.width, m.color)
 }
 
 func (m model) Init() tea.Cmd { return watchContext(m.ctx) }
@@ -650,7 +654,9 @@ func (m model) apply() tea.Cmd {
 func (m model) View() string {
 	labels := []string{"Review", "Environments", "Exclusions", "Discovery", "Roots & depth", "Report identity", "Preview & apply", "Saved"}
 	var b strings.Builder
-	fmt.Fprintf(&b, "ROG SETUP   %s   %d/%d\n\n", strings.ToUpper(labels[min(m.step, len(labels)-1)]), m.step+1, len(labels))
+	fmt.Fprintf(&b, "ROG SETUP  ·  %s  ·  %02d/%02d\n", strings.ToUpper(labels[min(m.step, len(labels)-1)]), m.step+1, len(labels))
+	writeRule(&b, m.width)
+	b.WriteByte('\n')
 	switch m.step {
 	case 0:
 		fmt.Fprintf(&b, "Config: %s\nConfigured Roots: %d\n", m.path, len(m.config.Roots))
@@ -848,19 +854,118 @@ func (m model) View() string {
 	if m.step != 7 {
 		b.WriteString("\nTab/Enter next · b back · Ctrl+C cancel")
 	}
-	return fitTerminal(b.String(), m.width)
+	return fitTerminal(b.String(), m.width, m.color)
 }
 
-func fitTerminal(value string, width int) string {
+func writeRule(b *strings.Builder, width int) {
+	if width <= 0 || width > 60 {
+		width = 60
+	}
+	b.WriteString(strings.Repeat("─", max(1, width)))
+	b.WriteByte('\n')
+}
+
+func fitTerminal(value string, width int, color bool) string {
 	lines := strings.Split(value, "\n")
 	for i, line := range lines {
 		line = cleanDisplay(line)
 		if width > 0 {
 			line = ansi.Truncate(line, width, "…")
 		}
-		lines[i] = line
+		lines[i] = styleTerminalLine(line, color)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func supportsColor() bool {
+	return os.Getenv("NO_COLOR") == "" && !strings.EqualFold(os.Getenv("TERM"), "dumb")
+}
+
+func styleTerminalLine(line string, color bool) string {
+	if !color || line == "" {
+		return line
+	}
+	switch {
+	case strings.HasPrefix(line, "ROG SETUP  ·  "):
+		parts := strings.Split(line, "  ·  ")
+		if len(parts) == 3 {
+			return ansiStyle("1;36", parts[0]) + "  ·  " + ansiStyle("1", parts[1]) + "  ·  " + ansiStyle("2", parts[2])
+		}
+	case strings.HasPrefix(line, "─"):
+		return ansiStyle("2", line)
+	case strings.HasPrefix(line, "  • "):
+		item := strings.TrimPrefix(line, "  • ")
+		nameEnd := strings.Index(item, "  ")
+		if nameEnd > 0 {
+			return "  " + ansiStyle("36", "•") + " " + ansiStyle("1;36", item[:nameEnd]) + ansiStyle("2", item[nameEnd:])
+		}
+	case strings.HasPrefix(line, "> [") || strings.HasPrefix(line, "  ["):
+		return styleChoice(line)
+	case strings.HasPrefix(line, "  ! ") || strings.HasPrefix(line, "Coverage warnings") || strings.HasPrefix(line, "No valid discoveries"):
+		return ansiStyle("33", line)
+	case strings.HasPrefix(line, "Found ") || strings.HasPrefix(line, "Configuration saved") || strings.HasPrefix(line, "Previous configuration restored"):
+		return ansiStyle("32", line)
+	case strings.HasPrefix(line, "Selected roots cover "):
+		fields := strings.Fields(line)
+		if len(fields) >= 6 && fields[3] == fields[5] {
+			return ansiStyle("32", line)
+		}
+		return ansiStyle("33", line)
+	case strings.HasPrefix(line, "Setup was not applied") || strings.HasPrefix(line, "Restore failed") || strings.HasPrefix(line, "Could not parse"):
+		return ansiStyle("31", line)
+	case line == "Proposed configuration" || strings.HasPrefix(line, "Restore ") && strings.HasSuffix(line, "?"):
+		return ansiStyle("1;36", line)
+	case strings.HasPrefix(line, "Tab/Enter") || strings.HasPrefix(line, "Press ") || strings.HasPrefix(line, "Space ") || strings.HasPrefix(line, "Up/Down ") || strings.HasPrefix(line, "Ctrl+C") || strings.HasPrefix(line, "Enter "):
+		return ansiStyle("2", line)
+	case strings.HasPrefix(line, "The local filesystem") || strings.HasPrefix(line, "Directory names") || strings.HasPrefix(line, "A depth of ") || strings.HasPrefix(line, "Reports match ") || strings.HasPrefix(line, "Setup searches ") || strings.HasPrefix(line, "Other saved YAML"):
+		return ansiStyle("2", line)
+	}
+	for _, label := range []string{"Config:", "Configured Roots:", "Index:", "Bridge:", "Exclusions:", "Coverage estimate:", "Report author emails:", "Additional local search path:", "Add excluded directory name:", "Add email:", "Current Configured Roots", "Restored Configured Roots", "Current config backup:"} {
+		if strings.HasPrefix(line, label) {
+			return ansiStyle("2", label) + line[len(label):]
+		}
+	}
+	return line
+}
+
+func styleChoice(line string) string {
+	start := strings.Index(line, "[")
+	if start < 0 {
+		return line
+	}
+	end := strings.Index(line[start:], "]")
+	if end < 0 {
+		return line
+	}
+	end += start
+	cursor, marker, rest := line[:start], line[start:end+1], line[end+1:]
+	if strings.HasPrefix(cursor, ">") {
+		cursor = ansiStyle("1;36", cursor)
+	}
+	if strings.Contains(marker, "✓") {
+		marker = ansiStyle("32", marker)
+	} else {
+		marker = ansiStyle("2", marker)
+	}
+	trimmed := strings.TrimLeft(rest, " ")
+	spaces := len(rest) - len(trimmed)
+	if trimmed != "" {
+		nameEnd := strings.IndexAny(trimmed, " \t")
+		if nameEnd < 0 {
+			nameEnd = len(trimmed)
+		}
+		if strings.Contains(marker, "✓") {
+			rest = strings.Repeat(" ", spaces) + ansiStyle("1;36", trimmed[:nameEnd]) + trimmed[nameEnd:]
+		}
+	}
+	return cursor + marker + rest
+}
+
+func ansiStyle(code, value string) string {
+	if value == "" {
+		return value
+	}
+	return "\x1b[" + code + "m" + value + "\x1b[0m"
 }
 
 func listWindow(total, cursor, limit int) (int, int) {
@@ -884,6 +989,7 @@ func listWindow(total, cursor, limit int) (int, int) {
 }
 
 func cleanDisplay(value string) string {
+	value = ansi.Strip(value)
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || (r >= 0x7f && r <= 0x9f) {
 			return -1
