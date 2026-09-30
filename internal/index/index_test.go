@@ -15,6 +15,7 @@ func TestNew(t *testing.T) {
 	assert.NotNil(t, idx)
 	assert.NotNil(t, idx.Repos)
 	assert.Equal(t, 0, idx.Count())
+	assert.True(t, idx.UpdatedAt.IsZero(), "an unsaved index has never been scanned")
 }
 
 func TestUpsert(t *testing.T) {

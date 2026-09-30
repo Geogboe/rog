@@ -274,6 +274,18 @@ func TestEnvironmentChoicesLabelCrossOperatingSystemRoots(t *testing.T) {
 	}
 }
 
+func TestEnvironmentHintDescribesOwningOSBridge(t *testing.T) {
+	m := model{step: 1, width: 80, height: 24, config: config.DefaultConfig()}
+	view := ansi.Strip(m.View())
+	want := "Windows locations use the installed rog.exe"
+	if runtime.GOOS == "windows" {
+		want = "Selected WSL distros start during discovery"
+	}
+	if !strings.Contains(view, want) {
+		t.Fatalf("environment hint does not describe this host's bridge: %s", view)
+	}
+}
+
 func TestRootChoicesKeepTheFocusedRootVisibleOnShortTerminal(t *testing.T) {
 	roots := make([]setup.RootSuggestion, 8)
 	candidates := make([]setup.Candidate, 8)

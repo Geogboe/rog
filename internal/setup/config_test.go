@@ -116,6 +116,23 @@ func TestValidateSetupConfigRejectsDuplicateAndRelativeRoots(t *testing.T) {
 	}
 }
 
+func TestIsWindowsDrivePath(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{`C:\Users\me\dev`, true},
+		{`d:/projects`, true},
+		{`C:relative`, false},
+		{`/home/me/projects`, false},
+		{`\\server\share`, false},
+	} {
+		if got := IsWindowsDrivePath(tc.path); got != tc.want {
+			t.Errorf("IsWindowsDrivePath(%q) = %t, want %t", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestApplyConfigRejectsInvalidTypedYAMLWithoutChangingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	original := []byte("roots: []\neditor: vi\n")

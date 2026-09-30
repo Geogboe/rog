@@ -74,12 +74,11 @@ type Repo struct {
 	TagsSource        string `json:"tags_source,omitempty"`
 }
 
-// New creates a new empty index
+// New creates an empty index with no scan timestamp until it is saved.
 func New() *Index {
 	return &Index{
 		Repos:           make(map[string]*Repo),
 		RejectedMarkers: make(map[string]RejectedMarker),
-		UpdatedAt:       time.Now(),
 	}
 }
 
@@ -136,8 +135,8 @@ func (idx *Index) canonicalizeWSLPaths() {
 
 // Save saves the index to disk atomically
 func (idx *Index) Save() error {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 
 	indexPath := getIndexPath()
 

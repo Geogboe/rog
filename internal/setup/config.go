@@ -170,7 +170,7 @@ func ValidateSetupConfig(cfg *config.Config) error {
 		absolute := false
 		switch {
 		case root.Windows:
-			absolute = windowsDriveAbsolute(root.Path)
+			absolute = IsWindowsDrivePath(root.Path)
 		case root.WSL || runtime.GOOS != "windows":
 			absolute = path.IsAbs(root.Path)
 		default:
@@ -191,7 +191,9 @@ func ValidateSetupConfig(cfg *config.Config) error {
 	return nil
 }
 
-func windowsDriveAbsolute(value string) bool {
+// IsWindowsDrivePath reports whether value starts with an absolute Windows drive path.
+// Setup uses it to classify locations entered from WSL and validate bridged roots.
+func IsWindowsDrivePath(value string) bool {
 	return len(value) >= 3 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' && (value[2] == '\\' || value[2] == '/')
 }
 

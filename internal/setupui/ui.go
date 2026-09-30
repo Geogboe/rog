@@ -748,7 +748,11 @@ func (m model) View() string {
 			b.WriteByte('\n')
 		}
 	case 1:
-		writeWrapped(&b, "Selected WSL distros start during discovery.", m.width)
+		if runtime.GOOS == "windows" {
+			writeWrapped(&b, "Selected WSL distros start during discovery.", m.width)
+		} else {
+			writeWrapped(&b, "Windows locations use the installed rog.exe during discovery.", m.width)
+		}
 		b.WriteString("\n\n")
 		totalRoots := len(m.local) + len(m.external)
 		start, end := listWindow(totalRoots, m.cursor, m.visibleRows(2))
@@ -940,9 +944,7 @@ func (m model) View() string {
 }
 
 func addedSearchRoot(value string) (setup.SearchRoot, bool) {
-	if runtime.GOOS != "windows" && len(value) >= 3 &&
-		((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) &&
-		value[1] == ':' && (value[2] == '\\' || value[2] == '/') {
+	if runtime.GOOS != "windows" && setup.IsWindowsDrivePath(value) {
 		trimmed := strings.TrimRight(value, `\/`)
 		name := trimmed
 		if at := strings.LastIndexAny(trimmed, `\/`); at >= 0 {
