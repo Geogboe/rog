@@ -23,6 +23,17 @@ import (
 	"github.com/Geogboe/rog/internal/setup"
 )
 
+var setupQuestions = []string{
+	"Ready to map your repositories?",
+	"Which locations should rog search?",
+	"Which directory names should rog skip?",
+	"What did rog find?",
+	"Which Configured Roots should rog use?",
+	"Which author emails should reports include?",
+	"Is this configuration ready to save?",
+	"Run the initial scan now?",
+}
+
 var ErrCancelled = errors.New("setup cancelled")
 var ErrTerminal = errors.New("rog setup needs an interactive terminal; use rog init for a starter config")
 
@@ -72,6 +83,8 @@ type model struct {
 	selectedExcludes    map[string]bool
 	discover            DiscoverFunc
 	step, cursor, width int
+	height              int
+	scroll              int
 	color               bool
 	showReviewDetails   bool
 	busy                bool
@@ -111,7 +124,7 @@ func Run(ctx context.Context, path string, cfg *config.Config, local, external [
 	if cfg == nil {
 		cfg = config.DefaultConfig()
 	}
-	m := model{ctx: ctx, config: cloneConfig(cfg), path: path, local: local, external: external, indexSummary: summary, discover: discover, selected: map[string]bool{}, selectedExcludes: map[string]bool{}, selectedEmails: map[string]bool{}, width: 80, color: supportsColor()}
+	m := model{ctx: ctx, config: cloneConfig(cfg), path: path, local: local, external: external, indexSummary: summary, discover: discover, selected: map[string]bool{}, selectedExcludes: map[string]bool{}, selectedEmails: map[string]bool{}, width: 80, height: 24, color: supportsColor()}
 	m.excludes = append([]string(nil), cfg.GlobalExcludes...)
 	for _, recommended := range setup.RecommendedExcludes() {
 		present := false
@@ -336,6 +349,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case tea.WindowSizeMsg:
 		m.width = x.Width
+		m.height = x.Height
 	case progressTick:
 		if m.busy && m.progress != nil {
 			m.progress.mu.Lock()
@@ -465,6 +479,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.step > 0 && !m.busy {
 				m.step--
 				m.cursor = 0
+				m.scroll = 0
 			}
 		case "enter", "right", "tab":
 			if m.busy {
@@ -482,13 +497,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.step < 6 {
 				m.step++
 				m.cursor = 0
+				m.scroll = 0
 			}
 		case "up", "k":
-			if m.cursor > 0 {
+			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
+				m.scroll = max(0, m.scroll-1)
+			} else if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			m.cursor++
+			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
+				m.scroll++
+			} else {
+				m.cursor++
+			}
+		case "pgup":
+			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
+				m.scroll = max(0, m.scroll-5)
+			}
+		case "pgdown":
+			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
+				m.scroll += 5
+			}
 		case " ":
 			if m.step == 1 {
 				if m.cursor < len(m.local) {
@@ -651,27 +681,37 @@ func (m model) apply() tea.Cmd {
 		}
 		m.config = next
 		m.step = 7
-		m.status = "Configuration saved. The index is separate; you can cancel the initial scan independently."
+		m.status = "Configuration saved. The repository index was not changed."
 		return applyMessage{m}
 	}
 }
 
 func (m model) View() string {
+	if m.width <= 0 {
+		m.width = 80
+	}
 	labels := []string{"Review", "Environments", "Exclusions", "Discovery", "Roots & depth", "Report identity", "Preview & apply", "Saved"}
 	var b strings.Builder
 	fmt.Fprintf(&b, "ROG SETUP  ·  %s  ·  %02d/%02d\n", strings.ToUpper(labels[min(m.step, len(labels)-1)]), m.step+1, len(labels))
 	writeRule(&b, m.width)
 	b.WriteByte('\n')
+	writeWrapped(&b, setupQuestions[min(m.step, len(setupQuestions)-1)], m.width)
+	b.WriteString("\n\n")
+	header := b.String()
+	b.Reset()
 	switch m.step {
 	case 0:
 		if m.showReviewDetails {
-			b.WriteString("\nCURRENT CONFIGURATION\n")
-			writeWrapped(&b, "Config file: "+m.path, m.width)
-			b.WriteString("\nConfigured Roots\n")
+			b.WriteString("CURRENT CONFIGURATION\n")
+			b.WriteString("Config file\n")
+			writeIndentedWrapped(&b, "  ", compactPath(m.path, max(1, m.width-2)), m.width)
+			fmt.Fprintf(&b, "\nConfigured Roots · %d\n", len(m.config.Roots))
+			if len(m.config.Roots) == 0 {
+				b.WriteString("  None\n")
+			}
 			for _, r := range m.config.Roots {
 				fmt.Fprintf(&b, "  • %s · depth %d\n", r.Name, r.MaxDepth)
-				writeWrapped(&b, r.Path, m.width)
-				b.WriteByte('\n')
+				writeIndentedWrapped(&b, "    ", compactPath(r.Path, max(1, m.width-4)), m.width)
 			}
 			indexSummary := fmt.Sprintf("Index: %d repositories", m.indexSummary.Count)
 			if m.indexSummary.UpdatedAt.IsZero() {
@@ -679,32 +719,33 @@ func (m model) View() string {
 			} else {
 				indexSummary += " · updated " + m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04")
 			}
-			writeWrapped(&b, indexSummary, m.width)
-			b.WriteByte('\n')
+			writeIndentedWrapped(&b, "  ", indexSummary, m.width)
 			writeWrapped(&b, "Cross-OS bridge: "+m.indexSummary.BridgeStatus, m.width)
-			fmt.Fprintf(&b, "\nExclusions (%d):\n", len(m.excludes))
-			writeWrapped(&b, strings.Join(m.excludes, ", "), m.width)
+			fmt.Fprintf(&b, "\nExclusions · %d\n", len(m.excludes))
+			writeIndentedWrapped(&b, "  ", listOrNone(m.excludes), m.width)
 		} else {
-			b.WriteString("\nBuild your repository map\n\n")
-			writeWrapped(&b, "Choose where rog should look. It finds Git repositories, suggests Configured Roots, and checks report author matching.", m.width)
-			b.WriteString("\n\nCURRENT COVERAGE\n")
+			writeWrapped(&b, "Discover repositories, review suggested Configured Roots, then save.", m.width)
+			b.WriteString("\nCURRENT INDEX\n")
 			rootLabel := "Configured Roots"
 			if len(m.config.Roots) == 1 {
 				rootLabel = "Configured Root"
 			}
-			fmt.Fprintf(&b, "%d %s · %d repositories indexed\n", len(m.config.Roots), rootLabel, m.indexSummary.Count)
+			fmt.Fprintf(&b, "  %d repositories\n  %d %s\n", m.indexSummary.Count, len(m.config.Roots), rootLabel)
 			if m.indexSummary.UpdatedAt.IsZero() {
-				b.WriteString("Last scan: never\n")
+				b.WriteString("  Last scan: never\n")
 			} else {
-				fmt.Fprintf(&b, "Last scan: %s\n", m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04"))
+				fmt.Fprintf(&b, "  Last scan: %s\n", m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04"))
 			}
-			b.WriteString("\nNothing changes until you apply the preview.\n")
+			b.WriteByte('\n')
+			writeWrapped(&b, "Nothing is saved until you confirm the preview.", m.width)
+			b.WriteByte('\n')
 		}
 	case 1:
-		b.WriteString("The local filesystem roots below are searched by default. Other operating systems use their rog worker; setup does not walk a mounted share.\n\n")
+		writeWrapped(&b, "Selected WSL distros start during discovery.", m.width)
+		b.WriteString("\n\n")
 		totalRoots := len(m.local) + len(m.external)
-		start, end := listWindow(totalRoots, m.cursor, 12)
-		if start > 0 || end < totalRoots {
+		start, end := listWindow(totalRoots, m.cursor, m.visibleRows(2))
+		if (start > 0 || end < totalRoots) && m.visibleRows(2) > 1 {
 			fmt.Fprintf(&b, "Showing locations %d-%d of %d\n", start+1, end, totalRoots)
 		}
 		for i := start; i < end; i++ {
@@ -722,19 +763,17 @@ func (m model) View() string {
 			if m.cursor == i {
 				cursor = ">"
 			}
-			fmt.Fprintf(&b, "%s [%s] %s  %s", cursor, mark, r.Name, r.Path)
-			if r.Distro != "" {
-				fmt.Fprintf(&b, "  (starts %s for discovery)", r.Distro)
-			}
-			b.WriteByte('\n')
+			name := displayRootName(r.Name, r.Windows, r.WSL, r.Distro)
+			fmt.Fprintf(&b, "%s [%s] %s\n", cursor, mark, name)
+			writeIndentedWrapped(&b, "    ", compactPath(r.Path, max(1, m.width-4)), m.width)
 		}
 		if m.addingLocation {
 			fmt.Fprintf(&b, "Additional local search path: %s_\n", m.locationInput)
 		}
-		b.WriteString("\nSpace includes or skips another OS; a adds a local search path. Enter reviews exclusions.\n")
 	case 2:
-		b.WriteString("Directory names here are skipped during repository discovery. Space toggles an item, d removes it, and e adds one. Built-in system and cache exclusions still apply.\n\n")
-		start, end := listWindow(len(m.excludes), m.cursor, 12)
+		writeWrapped(&b, "Checked names are skipped during discovery. Built-in system and cache exclusions always apply.", m.width)
+		b.WriteString("\n\n")
+		start, end := listWindow(len(m.excludes), m.cursor, m.visibleRows(1))
 		if start > 0 || end < len(m.excludes) {
 			fmt.Fprintf(&b, "Showing exclusions %d-%d of %d\n", start+1, end, len(m.excludes))
 		}
@@ -752,22 +791,23 @@ func (m model) View() string {
 		if m.addingExclude {
 			fmt.Fprintf(&b, "Add excluded directory name: %s_\n", m.excludeInput)
 		}
-		b.WriteString("\nEnter begins discovery; b returns to environments.\n")
 	case 3:
 		if m.busy {
-			b.WriteString("Discovering repositories with bounded workers…\n")
-			fmt.Fprintf(&b, "%s\n", m.status)
+			b.WriteString("Searching selected locations\n")
+			writeWrapped(&b, m.status, m.width)
+			b.WriteByte('\n')
 		} else {
-			fmt.Fprintf(&b, "%s\n%d excluded directories · %d overlapping markers\n", m.status, m.result.ExcludedDirectories, m.result.Overlaps)
+			writeWrapped(&b, m.status, m.width)
+			fmt.Fprintf(&b, "\n\n%d directories skipped · %d overlapping Git markers\n", m.result.ExcludedDirectories, m.result.Overlaps)
 			for _, w := range m.result.Warnings {
-				fmt.Fprintf(&b, "  ! %s\n", w)
+				writeIndentedWrapped(&b, "  ! ", w, m.width)
 			}
-			b.WriteString("\nEnter continues; b returns to environment choices.\n")
 		}
 	case 4:
-		b.WriteString("A depth of 2 reaches one folder below a root; depth 4 reaches three folders below. +/- changes the selected depth.\n\n")
-		start, end := listWindow(len(m.suggestions), m.cursor, 12)
-		if start > 0 || end < len(m.suggestions) {
+		writeWrapped(&b, "Depth 4 reaches 3 folders below a root.", m.width)
+		b.WriteString("\n\n")
+		start, end := listWindow(len(m.suggestions), m.cursor, m.visibleRows(2))
+		if (start > 0 || end < len(m.suggestions)) && m.visibleRows(2) > 1 {
 			fmt.Fprintf(&b, "Showing roots %d-%d of %d\n", start+1, end, len(m.suggestions))
 		}
 		for i := start; i < end; i++ {
@@ -781,22 +821,24 @@ func (m model) View() string {
 				cursor = ">"
 			}
 			coverage := setup.CountCoveredCandidates(m.result.Candidates, []config.Root{s.Root}, m.selectedExcludesList())
-			nested := ""
-			if parent := setup.NestedWithin(s.Root, m.suggestions); parent != "" {
-				nested = " · nested under " + parent
-			}
-			fmt.Fprintf(&b, "%s [%s] %-14s depth %-2d · %d in group · covers %d%s · %s\n", cursor, mark, s.Root.Name, s.Root.MaxDepth, s.Count, coverage, nested, s.Root.Path)
+			fmt.Fprintf(&b, "%s [%s] %s · depth %d\n", cursor, mark, displayRootName(s.Root.Name, s.Root.Windows, s.Root.WSL, s.Root.WSLDistro), s.Root.MaxDepth)
+			prefix := fmt.Sprintf("    %d found · %d covered · ", s.Count, coverage)
+			pathWidth := max(1, m.width-ansi.StringWidth(prefix))
+			writeIndentedWrapped(&b, prefix, compactPath(s.Root.Path, pathWidth), m.width)
 		}
 		if len(m.suggestions) == 0 {
 			b.WriteString("No valid discoveries. Existing roots are shown only if their filesystem was searched.\n")
 		}
 		covered := setup.CountCoveredCandidates(m.result.Candidates, selectedRoots(m.suggestions), m.selectedExcludesList())
-		fmt.Fprintf(&b, "Selected roots cover %d of %d valid discoveries.\n", covered, len(m.result.Candidates))
-		b.WriteString("\nSpace toggles a root. Enter continues.\n")
+		writeWrapped(&b, fmt.Sprintf("Coverage: %d/%d discoveries covered", covered, len(m.result.Candidates)), m.width)
+		b.WriteByte('\n')
 	case 5:
-		b.WriteString("Reports match commits by Git author email. Suggestions come from repository-local config and a five-commit author sample; they are not selected automatically.\n\n")
-		start, end := listWindow(len(m.emails), m.cursor, 12)
-		if start > 0 || end < len(m.emails) {
+		writeWrapped(&b, "Reports match commits by Git author email.", m.width)
+		b.WriteByte('\n')
+		writeWrapped(&b, "No selection uses each repo's Git email.", m.width)
+		b.WriteString("\n\n")
+		start, end := listWindow(len(m.emails), m.cursor, m.visibleRows(1))
+		if (start > 0 || end < len(m.emails)) && m.visibleRows(1) > 1 {
 			fmt.Fprintf(&b, "Showing identities %d-%d of %d\n", start+1, end, len(m.emails))
 		}
 		for i := start; i < end; i++ {
@@ -813,48 +855,43 @@ func (m model) View() string {
 		}
 		if m.addingEmail {
 			fmt.Fprintf(&b, "Add email: %s_\n", m.emailInput)
-		} else {
-			b.WriteString("Space selects; e adds an email; Enter previews.\n")
+		} else if len(m.emails) == 0 {
+			b.WriteString("No email suggestions found.\n")
 		}
 	case 6:
-		b.WriteString("Proposed configuration\n\n")
 		var selectedExcludes []string
 		for _, exclude := range m.excludes {
 			if m.selectedExcludes[exclude] {
 				selectedExcludes = append(selectedExcludes, exclude)
 			}
 		}
-		fmt.Fprintf(&b, "Directory exclusions: %s → %s\n", strings.Join(m.config.GlobalExcludes, ", "), strings.Join(selectedExcludes, ", "))
 		proposedRoots := selectedRoots(m.suggestions)
 		covered := setup.CountCoveredCandidates(m.result.Candidates, proposedRoots, selectedExcludes)
-		fmt.Fprintf(&b, "Coverage estimate: %d valid repositories discovered; %d covered by selected Configured Roots.\n", len(m.result.Candidates), covered)
+		b.WriteString("PROPOSED CHANGES\n\nCONFIGURED ROOTS\n  Before\n")
+		writeRootPreview(&b, m.config.Roots, m.width)
+		b.WriteString("  After\n")
+		writeRootPreview(&b, proposedRoots, m.width)
+		fmt.Fprintf(&b, "\nCOVERAGE\n  %d of %d discovered repositories covered\n", covered, len(m.result.Candidates))
 		uncovered := len(m.result.Candidates) - covered
 		if uncovered > 0 {
-			fmt.Fprintf(&b, "  ! %d valid discoveries are outside selected roots, beyond their depth limits, or excluded. Increase a root depth, include a nested root, or revise exclusions.\n", uncovered)
+			writeIndentedWrapped(&b, "  ! ", fmt.Sprintf("%d are outside selected roots, beyond depth limits, or excluded.", uncovered), m.width)
 		}
-		for _, current := range m.config.Roots {
-			if !containsConfigRoot(proposedRoots, current) {
-				fmt.Fprintf(&b, "  − %s  depth %d · %s\n", current.Name, current.MaxDepth, current.Path)
+		var picked []string
+		for _, e := range m.emails {
+			if m.selectedEmails[e] {
+				picked = append(picked, e)
 			}
 		}
-		for _, s := range m.suggestions {
-			if s.Selected {
-				fmt.Fprintf(&b, "  • %s  depth %d · %d discovered · %s\n", s.Root.Name, s.Root.MaxDepth, s.Count, s.Root.Path)
-			}
+		var oldEmails []string
+		if m.config.Report != nil {
+			oldEmails = m.config.Report.AuthorEmails
 		}
-		if len(m.selectedEmails) > 0 || (m.config.Report != nil && len(m.config.Report.AuthorEmails) > 0) {
-			var picked []string
-			for _, e := range m.emails {
-				if m.selectedEmails[e] {
-					picked = append(picked, e)
-				}
-			}
-			var oldEmails []string
-			if m.config.Report != nil {
-				oldEmails = m.config.Report.AuthorEmails
-			}
-			fmt.Fprintf(&b, "Report author emails: %s → %s\n", strings.Join(oldEmails, ", "), strings.Join(picked, ", "))
-		}
+		b.WriteString("\nEXCLUDED DIRECTORY NAMES\n")
+		writeIndentedWrapped(&b, "  Before: ", listOrNone(m.config.GlobalExcludes), m.width)
+		writeIndentedWrapped(&b, "  After:  ", listOrNone(selectedExcludes), m.width)
+		b.WriteString("\nREPORT AUTHOR EMAILS\n")
+		writeIndentedWrapped(&b, "  Before: ", reportEmailValue(oldEmails), m.width)
+		writeIndentedWrapped(&b, "  After:  ", reportEmailValue(picked), m.width)
 		backup := "No current config file; no backup will be created."
 		if _, err := os.Stat(m.path); err == nil {
 			at := m.previewAt
@@ -863,36 +900,269 @@ func (m model) View() string {
 			}
 			backup = filepath.Join(filepath.Dir(m.path), "setup-history", at.Local().Format("20060102-150405.000000000")+".yml")
 		}
-		fmt.Fprintf(&b, "\nConfig: %s\nProposed backup: %s (mode 0600)\nHistory keeps five revisions. Other config keys are preserved.\n", m.path, backup)
+		b.WriteString("\nSAVE DETAILS\n  Config file\n")
+		writeIndentedWrapped(&b, "    ", compactPath(m.path, max(1, m.width-4)), m.width)
+		b.WriteString("  Backup · mode 0600\n")
+		writeIndentedWrapped(&b, "    ", compactPath(backup, max(1, m.width-4)), m.width)
+		writeIndentedWrapped(&b, "  ", "Keeps five revisions; other YAML keys are preserved.", m.width)
 		warningCount := len(m.result.Warnings)
 		if uncovered > 0 {
 			warningCount++
 		}
 		if warningCount > 0 {
-			fmt.Fprintf(&b, "\nCoverage warnings (%d):\n", warningCount)
+			fmt.Fprintf(&b, "\nWARNINGS · %d\n", warningCount)
 			if uncovered > 0 {
-				fmt.Fprintf(&b, "  ! %d valid discoveries are not covered by the proposed Configured Roots.\n", uncovered)
+				writeIndentedWrapped(&b, "  ! ", fmt.Sprintf("%d valid discoveries are not covered by the proposed Configured Roots.", uncovered), m.width)
 			}
 			for _, warning := range m.result.Warnings {
-				fmt.Fprintf(&b, "  ! %s\n", warning)
+				writeIndentedWrapped(&b, "  ! ", warning, m.width)
 			}
 		}
-		b.WriteString("Press y to apply; b to edit.\n")
+		if m.status != "" {
+			fmt.Fprintf(&b, "\n%s\n", m.status)
+		}
 	case 7:
-		fmt.Fprintf(&b, "%s\n\nPress s to run rog scan now, or r to finish and run it later.\n", m.status)
+		writeWrapped(&b, m.status, m.width)
+		b.WriteByte('\n')
 	}
-	if m.step != 7 {
-		if m.step == 0 {
-			if m.showReviewDetails {
-				b.WriteString("\nd hide · Enter start · Ctrl+C cancel")
-			} else {
-				b.WriteString("\nEnter start · d config · Ctrl+C cancel")
+	footer := m.actionBlock(strings.Count(b.String(), "\n")+1 > max(1, m.height-9))
+	return fitSetupViewport(header+b.String()+footer, m.width, m.color, m.height, m.scroll)
+}
+
+func (m model) actionBlock(previewScroll bool) string {
+	var b strings.Builder
+	title, primary, hint := "NEXT", "", ""
+	switch m.step {
+	case 0:
+		primary = "Press Enter to choose locations"
+		hint = "d view settings · Ctrl+C cancel"
+		if m.showReviewDetails {
+			hint = "d hide settings · Ctrl+C cancel"
+			if previewScroll {
+				hint = "d hide settings · ↑/↓ review · Ctrl+C cancel"
 			}
+		}
+	case 1:
+		primary, hint = "Press Enter to review exclusions", "↑/↓ move · Space toggle · a add · b back"
+		if m.addingLocation {
+			primary, hint = "Press Enter to add this location", "Esc cancel entry · Ctrl+C cancel setup"
+		}
+	case 2:
+		primary, hint = "Press Enter to start discovery", "↑/↓ move · Space toggle · e add · d remove"
+		if m.addingExclude {
+			primary, hint = "Press Enter to add this name", "Esc cancel entry · Ctrl+C cancel setup"
+		}
+	case 3:
+		if m.busy {
+			title, primary, hint = "WORKING", "Discovery is running", "Ctrl+C cancel discovery"
 		} else {
-			b.WriteString("\nEnter next · b back · Ctrl+C cancel")
+			primary, hint = "Press Enter to choose roots", "b back to locations · Ctrl+C cancel"
+			if previewScroll {
+				hint = "↑/↓ review findings · b back · Ctrl+C cancel"
+			}
+		}
+	case 4:
+		primary, hint = "Press Enter to review report emails", "↑/↓ move · Space toggle · +/− depth"
+	case 5:
+		primary, hint = "Press Enter to preview changes", "↑/↓ move · Space select · e add"
+		if m.addingEmail {
+			primary, hint = "Press Enter to add this email", "Esc cancel entry · Ctrl+C cancel setup"
+		}
+	case 6:
+		primary, hint = "Press y to save this configuration", "b return to report emails · Ctrl+C cancel"
+		if previewScroll {
+			hint = "↑/↓ review changes · b return to report emails · Ctrl+C cancel"
+		}
+	case 7:
+		primary, hint = "Press s to scan the Configured Roots", "Press r to finish without scanning · q quit"
+	}
+	fmt.Fprintf(&b, "\n%s\n", title)
+	writeIndentedWrapped(&b, "  › ", primary, m.width)
+	writeIndentedWrapped(&b, "    ", hint, m.width)
+	return strings.TrimSuffix(b.String(), "\n")
+}
+
+func (m model) visibleRows(itemLines int) int {
+	if itemLines < 1 {
+		itemLines = 1
+	}
+	if m.height <= 0 {
+		return 12
+	}
+	rows := (m.height - 13) / itemLines
+	if rows < 1 {
+		return 1
+	}
+	return min(rows, 12)
+}
+
+func fitSetupViewport(value string, width int, color bool, height, scroll int) string {
+	value = fitTerminal(value, width, color)
+	if height <= 0 {
+		return value
+	}
+	lines := strings.Split(value, "\n")
+	actionStart := -1
+	for i, line := range lines {
+		if ansi.Strip(line) == "NEXT" || ansi.Strip(line) == "WORKING" {
+			actionStart = i
+			break
 		}
 	}
-	return fitTerminal(b.String(), m.width, m.color)
+	if actionStart < 0 {
+		if len(lines) <= height {
+			return value
+		}
+		return strings.Join(lines[:height], "\n")
+	}
+	footerStart := actionStart
+	if footerStart > 0 && ansi.Strip(lines[footerStart-1]) == "" {
+		footerStart--
+	}
+	footer := lines[footerStart:]
+	questionEnd := min(3, len(lines))
+	for questionEnd < len(lines) && ansi.Strip(lines[questionEnd]) != "" {
+		questionEnd++
+	}
+	headerCount := min(len(lines), questionEnd+1)
+	if footerStart < headerCount {
+		headerCount = footerStart
+	}
+	header := lines[:headerCount]
+	body := lines[headerCount:footerStart]
+	available := height - len(header) - len(footer)
+	if available <= 0 {
+		view := append(append([]string{}, header...), footer...)
+		if len(view) > height && len(header) > 0 {
+			view = append(append([]string{}, header[:max(1, len(header)-1)]...), footer...)
+		}
+		return strings.Join(view[:min(height, len(view))], "\n")
+	}
+	if len(body) <= available {
+		return strings.Join(append(append(append([]string{}, header...), body...), footer...), "\n")
+	}
+	showScrollIndicators := available >= 3
+	contentSlots := available
+	if showScrollIndicators {
+		contentSlots -= 2
+	}
+	contentSlots = max(1, contentSlots)
+	maxScroll := max(0, len(body)-contentSlots)
+	start := min(max(scroll, 0), maxScroll)
+	end := min(len(body), start+contentSlots)
+	viewport := make([]string, 0, len(header)+available+len(footer))
+	viewport = append(viewport, header...)
+	if showScrollIndicators && start > 0 {
+		viewport = append(viewport, "  ↑ more above")
+	}
+	viewport = append(viewport, body[start:end]...)
+	if showScrollIndicators && end < len(body) {
+		viewport = append(viewport, "  ↓ more below")
+	}
+	viewport = append(viewport, footer...)
+	return strings.Join(viewport, "\n")
+}
+
+func writeIndentedWrapped(b *strings.Builder, prefix, value string, width int) {
+	if width <= 0 {
+		width = 80
+	}
+	words := strings.Fields(value)
+	if len(words) == 0 {
+		b.WriteString(prefix)
+		b.WriteByte('\n')
+		return
+	}
+	line := prefix
+	for _, word := range words {
+		separator := ""
+		if line != prefix {
+			separator = " "
+		}
+		if ansi.StringWidth(line)+ansi.StringWidth(separator)+ansi.StringWidth(word) > width && line != prefix {
+			b.WriteString(line)
+			b.WriteByte('\n')
+			line = prefix + word
+			continue
+		}
+		line += separator + word
+	}
+	b.WriteString(line)
+	b.WriteByte('\n')
+}
+
+func compactPath(value string, width int) string {
+	if width <= 0 || ansi.StringWidth(value) <= width {
+		return value
+	}
+	if width < 5 {
+		return ansi.Truncate(value, width, "…")
+	}
+	leftWidth := (width - 1) / 2
+	rightWidth := width - 1 - leftWidth
+	var left, right strings.Builder
+	used := 0
+	for _, r := range value {
+		runeWidth := ansi.StringWidth(string(r))
+		if used+runeWidth > leftWidth {
+			break
+		}
+		left.WriteRune(r)
+		used += runeWidth
+	}
+	used = 0
+	runes := []rune(value)
+	for i := len(runes) - 1; i >= 0; i-- {
+		runeWidth := ansi.StringWidth(string(runes[i]))
+		if used+runeWidth > rightWidth {
+			break
+		}
+		right.WriteRune(runes[i])
+		used += runeWidth
+	}
+	suffix := []rune(right.String())
+	for i, j := 0, len(suffix)-1; i < j; i, j = i+1, j-1 {
+		suffix[i], suffix[j] = suffix[j], suffix[i]
+	}
+	return left.String() + "…" + string(suffix)
+}
+
+func listOrNone(items []string) string {
+	if len(items) == 0 {
+		return "None"
+	}
+	return strings.Join(items, ", ")
+}
+
+func reportEmailValue(items []string) string {
+	if len(items) == 0 {
+		return "Use each repository's Git email"
+	}
+	return strings.Join(items, ", ")
+}
+
+func writeRootPreview(b *strings.Builder, roots []config.Root, width int) {
+	if len(roots) == 0 {
+		b.WriteString("    None\n")
+		return
+	}
+	for _, root := range roots {
+		fmt.Fprintf(b, "    • %s · depth %d\n", displayRootName(root.Name, root.Windows, root.WSL, root.WSLDistro), root.MaxDepth)
+		writeIndentedWrapped(b, "      ", compactPath(root.Path, max(1, width-6)), width)
+	}
+}
+
+func displayRootName(name string, windows, wsl bool, distro string) string {
+	if wsl {
+		if distro != "" {
+			return name + " · WSL " + distro
+		}
+		return name + " · WSL"
+	}
+	if windows {
+		return name + " · Windows"
+	}
+	return name
 }
 
 func writeWrapped(b *strings.Builder, value string, width int) {
@@ -926,6 +1196,15 @@ func writeRule(b *strings.Builder, width int) {
 	b.WriteByte('\n')
 }
 
+func isSetupQuestion(line string) bool {
+	for _, question := range setupQuestions {
+		if line == question || (len(line) >= 5 && strings.Contains(question, line)) {
+			return true
+		}
+	}
+	return false
+}
+
 func fitTerminal(value string, width int, color bool) string {
 	lines := strings.Split(value, "\n")
 	for i, line := range lines {
@@ -939,12 +1218,24 @@ func fitTerminal(value string, width int, color bool) string {
 }
 
 func supportsColor() bool {
-	return os.Getenv("NO_COLOR") == "" && !strings.EqualFold(os.Getenv("TERM"), "dumb")
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	termName := strings.ToLower(os.Getenv("TERM"))
+	if runtime.GOOS != "windows" {
+		return termName != "" && termName != "dumb"
+	}
+	return os.Getenv("WT_SESSION") != "" || os.Getenv("ANSICON") != "" ||
+		strings.EqualFold(os.Getenv("ConEmuANSI"), "ON") ||
+		strings.Contains(termName, "xterm") || strings.Contains(termName, "ansi")
 }
 
 func styleTerminalLine(line string, color bool) string {
 	if !color || line == "" {
 		return line
+	}
+	if isSetupQuestion(line) {
+		return ansiStyle("1;36", line)
 	}
 	switch {
 	case strings.HasPrefix(line, "ROG SETUP  ·  "):
@@ -954,7 +1245,21 @@ func styleTerminalLine(line string, color bool) string {
 		}
 	case strings.HasPrefix(line, "─"):
 		return ansiStyle("2", line)
-	case line == "Build your repository map" || line == "CURRENT COVERAGE" || line == "CURRENT CONFIGURATION":
+	case line == "CURRENT CONFIGURATION":
+		return ansiStyle("1;36", line)
+	case line == "CURRENT INDEX":
+		return ansiStyle("2", line)
+	case line == "NEXT":
+		return ansiStyle("1;32", line)
+	case line == "WORKING":
+		return ansiStyle("1;33", line)
+	case strings.HasPrefix(line, "  › "):
+		return "  " + ansiStyle("32", "›") + " " + ansiStyle("1;32", strings.TrimPrefix(line, "  › "))
+	case strings.HasPrefix(line, "    "):
+		return ansiStyle("2", line)
+	case strings.HasPrefix(line, "Nothing is saved until"):
+		return ansiStyle("2", line)
+	case line == "PROPOSED CHANGES" || line == "CONFIGURED ROOTS" || line == "COVERAGE" || line == "EXCLUDED DIRECTORY NAMES" || line == "REPORT AUTHOR EMAILS" || line == "SAVE DETAILS" || strings.HasPrefix(line, "WARNINGS ·"):
 		return ansiStyle("1;36", line)
 	case strings.HasPrefix(line, "  • "):
 		item := strings.TrimPrefix(line, "  • ")
@@ -968,18 +1273,19 @@ func styleTerminalLine(line string, color bool) string {
 		return ansiStyle("33", line)
 	case strings.HasPrefix(line, "Found ") || strings.HasPrefix(line, "Configuration saved") || strings.HasPrefix(line, "Previous configuration restored"):
 		return ansiStyle("32", line)
-	case strings.HasPrefix(line, "Selected roots cover "):
+	case strings.HasPrefix(line, "Coverage: "):
 		fields := strings.Fields(line)
-		if len(fields) >= 6 && fields[3] == fields[5] {
-			return ansiStyle("32", line)
+		if len(fields) >= 2 {
+			counts := strings.Split(fields[1], "/")
+			if len(counts) == 2 && counts[0] == counts[1] {
+				return ansiStyle("32", line)
+			}
 		}
 		return ansiStyle("33", line)
 	case strings.HasPrefix(line, "Setup was not applied") || strings.HasPrefix(line, "Restore failed") || strings.HasPrefix(line, "Could not parse"):
 		return ansiStyle("31", line)
 	case line == "Proposed configuration" || strings.HasPrefix(line, "Restore ") && strings.HasSuffix(line, "?"):
 		return ansiStyle("1;36", line)
-	case strings.HasPrefix(line, "Tab/Enter") || strings.HasPrefix(line, "Press ") || strings.HasPrefix(line, "Space ") || strings.HasPrefix(line, "Up/Down ") || strings.HasPrefix(line, "Ctrl+C") || strings.HasPrefix(line, "Enter "):
-		return ansiStyle("2", line)
 	case strings.HasPrefix(line, "The local filesystem") || strings.HasPrefix(line, "Directory names") || strings.HasPrefix(line, "A depth of ") || strings.HasPrefix(line, "Reports match ") || strings.HasPrefix(line, "Setup searches ") || strings.HasPrefix(line, "Other saved YAML") || strings.HasPrefix(line, "Nothing changes until"):
 		return ansiStyle("2", line)
 	}
@@ -1142,15 +1448,6 @@ func (m model) selectedExcludesList() []string {
 		}
 	}
 	return excludes
-}
-
-func containsConfigRoot(roots []config.Root, target config.Root) bool {
-	for _, root := range roots {
-		if root.Name == target.Name && root.Path == target.Path && root.WSL == target.WSL && root.WSLDistro == target.WSLDistro && root.Windows == target.Windows {
-			return true
-		}
-	}
-	return false
 }
 
 func dropLastRune(s string) string {
