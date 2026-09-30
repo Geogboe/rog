@@ -154,7 +154,7 @@ func sameSource(candidate Candidate, root config.Root) bool {
 	if candidate.WSL {
 		return root.WSL && strings.EqualFold(candidate.Distro, root.WSLDistro)
 	}
-	if candidate.Windows || runtime.GOOS == "windows" && !candidate.WSL {
+	if candidate.Windows {
 		return root.Windows && !root.WSL
 	}
 	return !root.Windows && !root.WSL

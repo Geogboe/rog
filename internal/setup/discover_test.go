@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -139,6 +140,17 @@ func TestCountCoveredCandidatesUsesDepthExclusionsAndUniqueOverlap(t *testing.T)
 	}
 	if got := CountCoveredCandidates(candidates, []config.Root{deep}, []string{"repos"}); got != 1 {
 		t.Fatalf("excluded nested repository was counted as covered: got %d, want 1", got)
+	}
+}
+
+func TestNativeWindowsDiscoveryIsCoveredByNativeWindowsRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows root semantics")
+	}
+	root := config.Root{Name: "rog-test", Path: `C:\Users\me\dev\rog`, MaxDepth: 1}
+	candidate := Candidate{Path: root.Path, Root: root.Name, Valid: true}
+	if got := CountCoveredCandidates([]Candidate{candidate}, []config.Root{root}, nil); got != 1 {
+		t.Fatalf("native Windows root covered %d of 1 discovered repositories", got)
 	}
 }
 
