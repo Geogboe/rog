@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.7.0](https://github.com/Geogboe/rog/compare/v0.6.1...v0.7.0) (2026-09-30)
+
+
+### Features
+
+* **list:** add compact color table and output flag ([241bcdf](https://github.com/Geogboe/rog/commit/241bcdf6ae821e6f010283ef57c4dcb31c5938b8))
+* **report:** add work reports across configured roots ([9f5ee68](https://github.com/Geogboe/rog/commit/9f5ee686a97719caeb8763a76194393a66a13f73))
+* **report:** show live collection and AI progress ([49915c3](https://github.com/Geogboe/rog/commit/49915c3a47d5ddd05950df843dd0355b9cb71df9))
+* **scan:** add native discovery, WSL worker, and picker ([0907312](https://github.com/Geogboe/rog/commit/09073128318325231f0db4cbcd39bcf7f35e0833))
+* **scan:** show repository name in live progress ([064a404](https://github.com/Geogboe/rog/commit/064a404c641b400d48be4d8f47aa5357be85a8eb))
+* **setup:** add guided configuration wizard ([c3ee58a](https://github.com/Geogboe/rog/commit/c3ee58a8b22545bbac1d9607ed29389bb28d4b60))
+* **ui:** add restrained color to picker and info ([84e20cd](https://github.com/Geogboe/rog/commit/84e20cd169de407156506feaa2afa969c71ae73f))
+* **wsl:** scan Windows roots with native worker ([7bb3d9c](https://github.com/Geogboe/rog/commit/7bb3d9c904c91b881493d0b8ef5515e9a79f2f09))
+
+
+### Bug Fixes
+
+* **git:** avoid optional index locks during status ([79b6646](https://github.com/Geogboe/rog/commit/79b66466f57e3e446c67e5dbee5433ff658661ab))
+* **git:** hide Windows scan subprocesses ([97d062c](https://github.com/Geogboe/rog/commit/97d062cb08c1607724c94c83e881aef58ae828b3))
+* **list:** align colored columns to terminal width ([049e00a](https://github.com/Geogboe/rog/commit/049e00ab7ccb3350fd7d94f3d7a48e7b3c88f366))
+* **report:** honor Ctrl+C during AI confirmation ([0ff8b28](https://github.com/Geogboe/rog/commit/0ff8b2873273997f527c642fee0375ba28b3dec2))
+* **report:** include safe current filenames in AI evidence ([b0905e6](https://github.com/Geogboe/rog/commit/b0905e6652bf0ae76cd896cde98348a2cb814c24))
+* **report:** open generated HTML from a directory ([77af38b](https://github.com/Geogboe/rog/commit/77af38bc55cae9afeb8a15355fb0fc57a2939c89))
+* **scan:** handle mixed Windows and WSL catalogs safely ([3dc0de7](https://github.com/Geogboe/rog/commit/3dc0de782e24a482b2f353484010e247853dd058))
+* **setup:** count native Windows repositories in coverage ([20f257a](https://github.com/Geogboe/rog/commit/20f257a22574c51ecd49e14287403e802405ac3b))
+* **setup:** preserve config extensions and add Windows locations ([18262e4](https://github.com/Geogboe/rog/commit/18262e44e46585ca12aa57314996fa22114ad606))
+* **ui:** keep picker details next to short results ([002c624](https://github.com/Geogboe/rog/commit/002c6247e96f3da3bdf0ef79f9e97bb44fd466df))
+* **wsl:** hide Windows worker launches ([3426a69](https://github.com/Geogboe/rog/commit/3426a69ca9dbf1af9a08c50b9125d91b63267515))
+
+
+### Performance Improvements
+
+* **report:** batch commit change stats ([ef10fa4](https://github.com/Geogboe/rog/commit/ef10fa417b78a6946d14c31fbc9bc9b176a90091))
+* **report:** reduce Git launches during repository grouping ([97073b0](https://github.com/Geogboe/rog/commit/97073b07f23ed457f62ed709ad0ec61defbb8e0f))
+* **scan:** reuse indexed metadata by default ([5bbc068](https://github.com/Geogboe/rog/commit/5bbc0684ccd917d1e78117c62c155ff96fb757d1))
+* **scan:** speed mixed Windows and WSL scans ([836032c](https://github.com/Geogboe/rog/commit/836032cd6ddadb9586e9431134b66662735879cb))
+
 ## [0.6.1](https://github.com/Geogboe/rog/compare/v0.6.0...v0.6.1) (2026-08-12)
 
 
