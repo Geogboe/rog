@@ -10,9 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"github.com/Geogboe/rog/internal/git"
 	"github.com/Geogboe/rog/internal/scanner/discovery"
 )
 
@@ -46,8 +44,8 @@ type DiscoveryResult struct {
 	Warnings            []string    `json:"warnings,omitempty"`
 }
 
-// Discover searches roots on this operating system and validates Git markers
-// with bounded, read-only Git queries. It never reads status, patches, or READMEs.
+// Discover locates .git marker parents using filesystem traversal only.
+// Locations are pending Git validation by the subsequent full scan.
 func Discover(ctx context.Context, roots []SearchRoot, excludes []string, progress func(root, name string, done, total int)) DiscoveryResult {
 	var result DiscoveryResult
 	type found struct {
@@ -91,7 +89,7 @@ func Discover(ctx context.Context, roots []SearchRoot, excludes []string, progre
 		}
 	}
 	result.ExcludedDirectories = int(excluded.Load())
-	// A marker seen through overlapping roots is validated once, assigned to the
+	// A marker seen through overlapping roots is recorded once, assigned to the
 	// narrowest root, and counted as an overlap for the coverage preview.
 	byPath := map[string]found{}
 	for _, f := range foundPaths {
@@ -110,101 +108,21 @@ func Discover(ctx context.Context, roots []SearchRoot, excludes []string, progre
 		foundPaths = append(foundPaths, f)
 	}
 	sort.Slice(foundPaths, func(i, j int) bool { return foundPaths[i].path < foundPaths[j].path })
-	jobs := make(chan found)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var completed atomic.Int64
-	workers := min(8, max(1, len(foundPaths)))
-	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for job := range jobs {
-				c := validateCandidate(ctx, job.root, job.path)
-				mu.Lock()
-				if c.Valid {
-					result.Candidates = append(result.Candidates, c)
-				} else {
-					result.Rejected++
-				}
-				mu.Unlock()
-				if progress != nil {
-					progress(job.root.Name, filepath.Base(job.path), int(completed.Add(1)), len(foundPaths))
-				} else {
-					completed.Add(1)
-				}
-			}
-		}()
-	}
 	for _, f := range foundPaths {
-		select {
-		case jobs <- f:
-		case <-ctx.Done():
-			break
-		}
 		if ctx.Err() != nil {
 			break
 		}
+		c := Candidate{Path: filepath.Clean(f.path), Root: f.root.Name, WSL: f.root.WSL, Distro: f.root.Distro, Windows: f.root.Windows}
+		if rel, err := filepath.Rel(f.root.Path, c.Path); err == nil && rel != "." {
+			c.Relative = rel
+			c.Depth = len(strings.Split(filepath.Clean(rel), string(filepath.Separator)))
+		}
+		result.Candidates = append(result.Candidates, c)
 	}
-	close(jobs)
-	wg.Wait()
-	sort.Slice(result.Candidates, func(i, j int) bool { return result.Candidates[i].Path < result.Candidates[j].Path })
-	if err := ctx.Err(); err != nil {
+	if ctx.Err() != nil {
 		result.Warnings = append(result.Warnings, "discovery cancelled; coverage is partial")
 	}
 	return result
-}
-
-func validateCandidate(ctx context.Context, root SearchRoot, markerParent string) Candidate {
-	c := Candidate{Path: filepath.Clean(markerParent), Root: root.Name, WSL: root.WSL, Distro: root.Distro, Windows: root.Windows}
-	rel, err := filepath.Rel(root.Path, c.Path)
-	if err == nil && rel != "." {
-		c.Relative = rel
-		c.Depth = len(strings.Split(filepath.Clean(rel), string(filepath.Separator)))
-	}
-	out, err := boundedGitOutput(ctx, 3*time.Second, c.Path, "rev-parse", "--show-toplevel")
-	if err != nil {
-		c.Reason = "Git rejected this marker"
-		return c
-	}
-	resolved := strings.TrimSpace(string(out))
-	if !samePath(resolved, c.Path) {
-		c.Reason = "Git marker points to a different worktree root"
-		return c
-	}
-	c.Valid = true
-	if b, err := boundedGitOutput(ctx, 2*time.Second, c.Path, "config", "--get", "user.email"); err == nil {
-		c.Email = strings.TrimSpace(string(b))
-	}
-	if b, err := boundedGitOutput(ctx, 3*time.Second, c.Path, "log", "-5", "--format=%ae", "--all"); err == nil {
-		seen := map[string]bool{}
-		for _, email := range strings.Split(string(b), "\n") {
-			email = strings.TrimSpace(email)
-			key := strings.ToLower(email)
-			if email != "" && !seen[key] {
-				seen[key] = true
-				c.AuthorEmails = append(c.AuthorEmails, email)
-			}
-		}
-	}
-	return c
-}
-
-func boundedGitOutput(parent context.Context, timeout time.Duration, repo string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	cmd := git.CommandContext(ctx, append([]string{"-C", repo}, args...)...)
-	return cmd.Output()
-}
-
-func samePath(a, b string) bool {
-	a, _ = filepath.Abs(a)
-	b, _ = filepath.Abs(b)
-	a, b = filepath.Clean(a), filepath.Clean(b)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
 }
 
 func canonicalPath(value string) string {

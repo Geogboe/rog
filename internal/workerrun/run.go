@@ -26,7 +26,7 @@ func Run(ctx context.Context, req workerproto.Request, out io.Writer) error {
 	if req.Operation == "report" {
 		return runReport(ctx, req, out)
 	}
-	if req.Operation == "discover" {
+	if req.Operation == "discover_locations" {
 		enc := json.NewEncoder(out)
 		var mu sync.Mutex
 		result := setup.Discover(ctx, req.DiscoveryRoots, req.DiscoveryExcludes, func(root, name string, done, total int) {

@@ -154,3 +154,26 @@ func TestExpandWindowsRootInWSL(t *testing.T) {
 		t.Fatal("accepted conflicting root types")
 	}
 }
+
+func TestSetupConfigDestinationPrecedence(t *testing.T) {
+	t.Setenv("ROG_CONFIG", "")
+	base := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", base)
+	if got := GetConfigPath(); got != filepath.Join(base, "rog", "config.yml") {
+		t.Fatalf("XDG destination=%s", got)
+	}
+	explicit := filepath.Join(t.TempDir(), "custom.yml")
+	t.Setenv("ROG_CONFIG", explicit)
+	if got := GetConfigPath(); got != explicit {
+		t.Fatalf("explicit destination=%s", got)
+	}
+	t.Setenv("ROG_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := GetConfigPath(); got != filepath.Join(home, ".config", "rog", "config.yml") {
+		t.Fatalf("default destination=%s", got)
+	}
+}

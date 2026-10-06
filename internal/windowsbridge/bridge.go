@@ -199,7 +199,7 @@ func (b Bridge) Discover(ctx context.Context, roots []config.Root, excludes []st
 	for _, root := range roots {
 		search = append(search, setup.SearchRoot{Name: root.Name, Path: root.Path, Windows: true})
 	}
-	req := workerproto.Request{Version: workerproto.Version, Operation: "discover", DiscoveryRoots: search, DiscoveryExcludes: excludes}
+	req := workerproto.Request{Version: workerproto.Version, Operation: "discover_locations", DiscoveryRoots: search, DiscoveryExcludes: excludes}
 	err := b.invoke(ctx, req, func(event workerproto.Event) error {
 		switch event.Type {
 		case "discovery_progress":

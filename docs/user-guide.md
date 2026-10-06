@@ -63,34 +63,49 @@ This creates a basic config that you should customize with your actual project d
 
 ### `rog setup`
 
-Run a terminal wizard to inspect the current config and index, choose the local
-filesystem and optional WSL or Windows sources, edit directory exclusions,
-discover and validate Git repositories, choose suggested Configured Roots and
-scan depths, review recent commit author emails, and preview the config before
-applying it. The wizard searches fixed local drives (Windows) or the local
-filesystem (Linux/WSL), uses bounded workers, and does not run Git status or read
-repository files. Directory symlinks, OS-managed locations, caches, and
-configured excludes are skipped. Discovery may take a while on a large
-filesystem; Ctrl+C cancels without saving.
+Run a terminal wizard with three main steps. Its opening notice shows the actual
+config destination (`ROG_CONFIG`, then `XDG_CONFIG_HOME/rog/config.yml`, otherwise
+`~/.config/rog/config.yml`). Nothing is saved until the final confirmation.
 
-Each rog installation maintains its own config and index. Windows can include
-selected registered WSL distros; WSL can include configured Windows roots through
-the Windows worker. From WSL, press `a` on the locations page to add a Windows
-drive path such as `C:\Users\me\dev`; rog runs discovery through the installed
-Windows `rog.exe`. An invalid or relative path stays editable and shows a
-correction. A selected WSL distro starts when discovery begins. If its
-matching worker is unavailable, setup reports that root as unavailable and does
-not install a worker. The initial scan is a separate optional step after config
-application.
+1. **Include WSL?** Windows users with registered WSL distributions select which
+   distributions to include. Discovery may start selected distributions.
+   Deselecting a distribution removes its roots from the draft. This step is
+   skipped outside Windows or when no distributions are available.
+2. **Which project roots should rog use?** Existing roots and depths are
+   preloaded. Add or edit a path with `a` or `e`, select/remove a root with Space,
+   and adjust its depth with `+`/`-`. New manual roots start at depth 4; depth 1
+   finds `dev/repo`, depth 2 also finds `dev/team/repo`. During path entry, Tab
+   chooses the native environment or a selected WSL distribution. Windows drive
+   paths entered from WSL use the Windows worker. Press `d` to discover roots,
+   either instead of manual entry or alongside it. Review the recommended paths,
+   owning environments, depths, and repository-location counts before proceeding.
+3. **Save these settings?** Review roots before/after, warnings, the destination,
+   and the backup path. Press `b` to edit or `y` to save. If the config changed
+   while setup was open, review the refreshed proposal and confirm again.
 
-Setup previews the selected roots, depth, exclusions, report emails, coverage
-estimate, warnings, and the timestamped backup path. It backs up the previous
-config in `setup-history/`, retains five revisions, and supports previewed
-restore with `rog setup --rollback`. Backups use restrictive permissions. Setup
-preserves unknown YAML keys at the top level, under `report`, and within roots
-whose name, path, and owning environment remain the same. A
-noninteractive terminal can use `rog init` for a starter configuration, then
-run setup in a terminal.
+Discovery only finds `.git` directories and worktree marker files. It does not
+run Git commands, read Git metadata, or update the index. Findings are repository
+locations pending validation, and depths are derived from their locations.
+Discovery searches fixed local drives on Windows or the local filesystem on
+Linux/WSL, plus selected WSL distributions. Directory symlinks, OS-managed
+locations, caches, and configured exclusions are skipped. Unavailable workers
+and permission failures appear as partial-discovery warnings. Workers must
+support filesystem-only discovery; older workers are rejected rather than used
+for Git-based discovery. Setup does not install workers.
+
+All choices stay in memory until saving. Ctrl+C cancels setup without writing
+config, backup history, or index. Saving backs up the existing config in
+`setup-history/`, retains five revisions, writes atomically, and verifies the
+result. Backups use restrictive permissions. Existing exclusions, report
+settings, unrelated YAML, and unknown keys on retained roots are preserved.
+`rog setup --rollback` previews and restores previous configurations.
+
+After saving, **Run a full project scan now?** offers the equivalent of a local
+`rog scan --full`: validate repositories, collect Git metadata/status, and build
+or refresh the index. Press `s` or `y` to scan, or `n` or `r` to finish. Declining,
+interrupting, or failing this scan leaves the saved config intact. Each native
+installation maintains its own config and index. A noninteractive terminal can
+use `rog init` for a starter configuration, then run setup in a terminal.
 
 ### `rog scan`
 

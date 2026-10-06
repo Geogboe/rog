@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"runtime"
 	"sort"
@@ -14,7 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Geogboe/rog/internal/config"
-	"github.com/Geogboe/rog/internal/index"
 	"github.com/Geogboe/rog/internal/setup"
 	"github.com/Geogboe/rog/internal/setupui"
 	"github.com/Geogboe/rog/internal/windowsbridge"
@@ -27,7 +25,7 @@ var setupRollback bool
 var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Configure rog with a guided repository discovery wizard",
-	Long:  "Walk through environment selection, repository discovery, Configured Roots, report identity, and a reviewable config transaction.",
+	Long:  "Choose optional WSL distributions, enter or discover project roots and depths, then review and save settings in one config transaction. Discovery only locates repository markers; a full Git scan is offered after saving.",
 	Args:  cobra.NoArgs,
 	RunE:  runSetup,
 }
@@ -40,33 +38,17 @@ func init() {
 func runSetup(cmd *cobra.Command, args []string) error {
 	configPath := config.GetConfigPath()
 	if setupRollback {
-		return runSetupRollback(configPath)
+		return runSetupRollback(cmd, configPath)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	idx, err := index.Load()
-	if err != nil {
-		return fmt.Errorf("load index: %w", err)
-	}
 	local := setup.LocalSearchRoots()
 	external := setupExternalRoots(cfg)
 	ctx, cancel := signalSetupContext(cmd.Context())
 	defer cancel()
-	bridgeStatus := "native filesystem only"
-	if runtime.GOOS == "windows" {
-		if wsl.IsAvailable() {
-			bridgeStatus = "WSL registered; selected distros start only when discovery begins"
-		} else {
-			bridgeStatus = "WSL not available"
-		}
-	} else if _, err := exec.LookPath("rog.exe"); err == nil {
-		bridgeStatus = "Windows rog.exe available through WSL interop"
-	} else {
-		bridgeStatus = "Windows worker unavailable; Linux discovery remains available"
-	}
-	result, err := setupui.Run(ctx, configPath, cfg, local, external, setupui.IndexSummary{Count: idx.Count(), UpdatedAt: idx.UpdatedAt, BridgeStatus: bridgeStatus}, discoverSetup)
+	result, err := setupui.Run(ctx, configPath, cfg, local, external, discoverSetup)
 	if err != nil {
 		if errors.Is(err, setupui.ErrCancelled) {
 			return nil
@@ -77,12 +59,20 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	if result.ScanNow {
-		fmt.Fprintln(os.Stderr, "Running initial rog scan…")
-		runScan(scanCmd, nil)
+		fmt.Fprintln(os.Stderr, "Running full local project scan…")
+		runSetupScan(cmd)
 	} else {
-		fmt.Fprintf(os.Stderr, "Setup saved. Run `rog scan` to build the index, then `rog report` to review work.\n")
+		fmt.Fprintf(os.Stderr, "Setup saved. Run `rog scan --full` to build the index, then `rog report` to review work.\n")
 	}
 	return nil
+}
+
+// runSetupScan refreshes every configured repository without remote or LLM work.
+func runSetupScan(cmd *cobra.Command) {
+	full, remote, llm, dry, refresh := scanFull, scanRemote, scanLLM, scanDryRun, scanRefreshMeta
+	defer func() { scanFull, scanRemote, scanLLM, scanDryRun, scanRefreshMeta = full, remote, llm, dry, refresh }()
+	scanFull, scanRemote, scanLLM, scanDryRun, scanRefreshMeta = true, false, false, false, false
+	runScan(cmd, nil)
 }
 
 func setupExternalRoots(cfg *config.Config) []setup.SearchRoot {
@@ -163,10 +153,12 @@ func discoverSetup(ctx context.Context, roots []setup.SearchRoot, excludes []str
 func mergeDiscovery(dst *setup.DiscoveryResult, src setup.DiscoveryResult) {
 	dst.Candidates = append(dst.Candidates, src.Candidates...)
 	dst.Rejected += src.Rejected
+	dst.Overlaps += src.Overlaps
+	dst.ExcludedDirectories += src.ExcludedDirectories
 	dst.Warnings = append(dst.Warnings, src.Warnings...)
 }
 
-func runSetupRollback(path string) error {
+func runSetupRollback(cmd *cobra.Command, path string) error {
 	revisions, err := setup.History(path)
 	if err != nil {
 		return err
@@ -174,7 +166,7 @@ func runSetupRollback(path string) error {
 	if len(revisions) == 0 {
 		return fmt.Errorf("no setup revisions are available to restore")
 	}
-	ctx, cancel := signalSetupContext(context.Background())
+	ctx, cancel := signalSetupContext(cmd.Context())
 	defer cancel()
 	scanNow, restored, err := setupui.RunRollback(ctx, path, revisions)
 	if err != nil {
@@ -184,7 +176,7 @@ func runSetupRollback(path string) error {
 		return nil
 	}
 	if scanNow {
-		runScan(scanCmd, nil)
+		runScan(cmd, nil)
 	} else {
 		fmt.Fprintln(os.Stderr, "Rollback saved. Run `rog scan` to refresh the index if needed.")
 	}

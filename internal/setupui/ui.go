@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,16 +22,7 @@ import (
 	"github.com/Geogboe/rog/internal/setup"
 )
 
-var setupQuestions = []string{
-	"Ready to map your repositories?",
-	"Which locations should rog search?",
-	"Which directory names should rog skip?",
-	"What did rog find?",
-	"Which Configured Roots should rog use?",
-	"Which author emails should reports include?",
-	"Is this configuration ready to save?",
-	"Run the initial scan now?",
-}
+var setupQuestions = []string{"Include WSL?", "Which project roots should rog use?", "Save these settings?", "Run a full project scan now?"}
 
 var ErrCancelled = errors.New("setup cancelled")
 var ErrTerminal = errors.New("rog setup needs an interactive terminal; use rog init for a starter config")
@@ -43,15 +33,9 @@ type Result struct {
 	ScanNow   bool
 	Cancelled bool
 }
-type IndexSummary struct {
-	Count        int
-	UpdatedAt    time.Time
-	BridgeStatus string
-}
 type discoveryDone struct {
 	result      setup.DiscoveryResult
 	suggestions []setup.RootSuggestion
-	emails      []string
 }
 type progressTick time.Time
 type setupContextDone struct{}
@@ -74,39 +58,28 @@ func watchContext(ctx context.Context) tea.Cmd {
 type applyMessage struct{ model model }
 
 type model struct {
-	ctx                 context.Context
-	config              *config.Config
-	path                string
-	local, external     []setup.SearchRoot
-	selected            map[string]bool
-	excludes            []string
-	selectedExcludes    map[string]bool
-	discover            DiscoverFunc
-	step, cursor, width int
-	height              int
-	scroll              int
-	color               bool
-	showReviewDetails   bool
-	busy                bool
-	result              setup.DiscoveryResult
-	suggestions         []setup.RootSuggestion
-	progress            *progressState
-	emails              []string
-	selectedEmails      map[string]bool
-	emailInput          string
-	addingEmail         bool
-	excludeInput        string
-	addingExclude       bool
-	status              string
-	indexSummary        IndexSummary
-	addingLocation      bool
-	locationInput       string
-	previewAt           time.Time
-	finished            bool
-	out                 Result
+	ctx                                 context.Context
+	config                              *config.Config
+	path                                string
+	local, external                     []setup.SearchRoot
+	selected                            map[string]bool
+	discover                            DiscoverFunc
+	step, cursor, width, height, scroll int
+	color, busy                         bool
+	result                              setup.DiscoveryResult
+	suggestions                         []setup.RootSuggestion
+	progress                            *progressState
+	status                              string
+	addingLocation                      bool
+	locationInput, inputDistro          string
+	editIndex, inputDepth               int
+	previewAt                           time.Time
+	original, preview                   []byte
+	finished                            bool
+	out                                 Result
 }
 
-func Run(ctx context.Context, path string, cfg *config.Config, local, external []setup.SearchRoot, summary IndexSummary, discover DiscoverFunc) (Result, error) {
+func Run(ctx context.Context, path string, cfg *config.Config, local, external []setup.SearchRoot, discover DiscoverFunc) (Result, error) {
 	if !term.IsTerminal(os.Stdin.Fd()) || !term.IsTerminal(os.Stderr.Fd()) {
 		return Result{}, ErrTerminal
 	}
@@ -124,38 +97,11 @@ func Run(ctx context.Context, path string, cfg *config.Config, local, external [
 	if cfg == nil {
 		cfg = config.DefaultConfig()
 	}
-	m := model{ctx: ctx, config: cloneConfig(cfg), path: path, local: local, external: external, indexSummary: summary, discover: discover, selected: map[string]bool{}, selectedExcludes: map[string]bool{}, selectedEmails: map[string]bool{}, width: 80, height: 24, color: supportsColor()}
-	m.excludes = append([]string(nil), cfg.GlobalExcludes...)
-	for _, recommended := range setup.RecommendedExcludes() {
-		present := false
-		for _, current := range m.excludes {
-			if strings.EqualFold(current, recommended) {
-				present = true
-				break
-			}
-		}
-		if !present {
-			m.excludes = append(m.excludes, recommended)
-		}
+	original, err := readSetupFile(path)
+	if err != nil {
+		return Result{}, err
 	}
-	for _, exclude := range m.excludes {
-		m.selectedExcludes[exclude] = true
-	}
-	for _, r := range external {
-		for _, old := range cfg.Roots {
-			if old.Name == r.Name && old.Path == r.Path && old.WSL == r.WSL && old.Windows == r.Windows && old.WSLDistro == r.Distro {
-				m.selected[searchRootKey(r)] = true
-			}
-		}
-	}
-	for _, r := range local {
-		m.selected[searchRootKey(r)] = true
-	}
-	if cfg.Report != nil {
-		for _, email := range cfg.Report.AuthorEmails {
-			m.selectedEmails[email] = true
-		}
-	}
+	m := newModel(ctx, path, cfg, local, external, discover, original)
 	final, err := tea.NewProgram(m, tea.WithInput(stdin), tea.WithOutput(stderr), tea.WithAltScreen()).Run()
 	if err != nil {
 		return Result{}, err
@@ -341,608 +287,6 @@ func (m rollbackModel) View() string {
 }
 
 func (m model) Init() tea.Cmd { return watchContext(m.ctx) }
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch x := msg.(type) {
-	case setupContextDone:
-		m.out.Cancelled = true
-		m.finished = true
-		return m, tea.Quit
-	case tea.WindowSizeMsg:
-		m.width = x.Width
-		m.height = x.Height
-	case progressTick:
-		if m.busy && m.progress != nil {
-			m.progress.mu.Lock()
-			m.status = m.progress.text
-			m.progress.mu.Unlock()
-			return m, nextProgress()
-		}
-	case discoveryDone:
-		m.busy = false
-		m.result = x.result
-		m.suggestions = x.suggestions
-		m.emails = x.emails
-		if m.config.Report != nil {
-			for _, email := range m.config.Report.AuthorEmails {
-				if !contains(m.emails, email) {
-					m.emails = append(m.emails, email)
-				}
-			}
-			sort.Strings(m.emails)
-		}
-		m.cursor = 0
-		m.status = fmt.Sprintf("Found %d valid repositories; %d invalid Git markers were rejected.", len(m.result.Candidates), m.result.Rejected)
-	case applyMessage:
-		return x.model, nil
-	case tea.KeyMsg:
-		key := x.String()
-		if m.step == 7 {
-			switch key {
-			case "s", "S":
-				m.out.ScanNow = true
-				m.finished = true
-				return m, tea.Quit
-			case "r", "R", "q", "esc", "ctrl+c":
-				m.finished = true
-				return m, tea.Quit
-			default:
-				return m, nil
-			}
-		}
-		if key == "ctrl+c" {
-			m.out.Cancelled = true
-			m.finished = true
-			return m, tea.Quit
-		}
-		if m.step == 0 && key == "d" {
-			m.showReviewDetails = !m.showReviewDetails
-			return m, nil
-		}
-		if m.addingLocation {
-			switch key {
-			case "esc":
-				m.addingLocation = false
-				m.locationInput = ""
-			case "enter":
-				path := strings.TrimSpace(m.locationInput)
-				root, ok := addedSearchRoot(path)
-				if !ok {
-					m.status = "Enter an absolute local path or a Windows drive path such as C:\\Users\\me\\dev."
-					return m, nil
-				}
-				if root.Windows {
-					m.external = append(m.external, root)
-				} else {
-					m.local = append(m.local, root)
-				}
-				m.selected[searchRootKey(root)] = true
-				m.status = ""
-				m.addingLocation = false
-				m.locationInput = ""
-			case "backspace":
-			default:
-				if x.Type == tea.KeyRunes {
-					m.locationInput += string(x.Runes)
-				}
-			}
-			if key == "backspace" {
-				m.locationInput = dropLastRune(m.locationInput)
-			}
-			return m, nil
-		}
-		if m.addingExclude {
-			switch key {
-			case "esc":
-				m.addingExclude = false
-				m.excludeInput = ""
-			case "enter":
-				value := strings.TrimSpace(m.excludeInput)
-				if value != "" && !contains(m.excludes, value) {
-					m.excludes = append(m.excludes, value)
-					m.selectedExcludes[value] = true
-				}
-				m.addingExclude = false
-				m.excludeInput = ""
-			case "backspace":
-				m.excludeInput = dropLastRune(m.excludeInput)
-			default:
-				if x.Type == tea.KeyRunes {
-					m.excludeInput += string(x.Runes)
-				}
-			}
-			return m, nil
-		}
-		if m.addingEmail {
-			switch key {
-			case "esc":
-				m.addingEmail = false
-				m.emailInput = ""
-			case "enter":
-				v := strings.TrimSpace(m.emailInput)
-				if v != "" && !contains(m.emails, v) {
-					m.emails = append(m.emails, v)
-					sort.Strings(m.emails)
-					m.selectedEmails[v] = true
-				}
-				m.addingEmail = false
-				m.emailInput = ""
-			case "backspace":
-			default:
-				if x.Type == tea.KeyRunes {
-					m.emailInput += string(x.Runes)
-				}
-			}
-			if key == "backspace" {
-				m.emailInput = dropLastRune(m.emailInput)
-			}
-			return m, nil
-		}
-		switch key {
-		case "q", "esc":
-			m.out.Cancelled = true
-			m.finished = true
-			return m, tea.Quit
-		case "b", "left", "shift+tab":
-			if m.step > 0 && !m.busy {
-				m.step--
-				m.cursor = 0
-				m.scroll = 0
-			}
-		case "enter", "right", "tab":
-			if m.busy {
-				return m, nil
-			}
-			if m.step == 2 {
-				m.step = 3
-				m.busy = true
-				m.progress = &progressState{text: "Searching selected filesystems…"}
-				return m, m.startDiscovery()
-			}
-			if m.step == 5 {
-				m.previewAt = time.Now()
-			}
-			if m.step < 6 {
-				m.step++
-				m.cursor = 0
-				m.scroll = 0
-			}
-		case "up", "k":
-			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
-				m.scroll = max(0, m.scroll-1)
-			} else if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
-				m.scroll++
-			} else {
-				m.cursor++
-			}
-		case "pgup":
-			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
-				m.scroll = max(0, m.scroll-5)
-			}
-		case "pgdown":
-			if m.step == 6 || (m.step == 0 && m.showReviewDetails) || (m.step == 3 && !m.busy) {
-				m.scroll += 5
-			}
-		case " ":
-			if m.step == 1 {
-				if m.cursor < len(m.local) {
-					r := m.local[m.cursor]
-					key := searchRootKey(r)
-					m.selected[key] = !m.selected[key]
-				} else {
-					idx := m.cursor - len(m.local)
-					if idx >= 0 && idx < len(m.external) {
-						r := m.external[idx]
-						key := searchRootKey(r)
-						m.selected[key] = !m.selected[key]
-					}
-				}
-			}
-			if m.step == 2 && m.cursor < len(m.excludes) {
-				value := m.excludes[m.cursor]
-				m.selectedExcludes[value] = !m.selectedExcludes[value]
-			}
-			if m.step == 4 && m.cursor < len(m.suggestions) {
-				m.suggestions[m.cursor].Selected = !m.suggestions[m.cursor].Selected
-			}
-			if m.step == 5 && m.cursor < len(m.emails) {
-				email := m.emails[m.cursor]
-				m.selectedEmails[email] = !m.selectedEmails[email]
-			}
-		case "+", "=":
-			if m.step == 4 && m.cursor < len(m.suggestions) {
-				m.suggestions[m.cursor].Root.MaxDepth++
-			}
-		case "-":
-			if m.step == 4 && m.cursor < len(m.suggestions) && m.suggestions[m.cursor].Root.MaxDepth > 1 {
-				m.suggestions[m.cursor].Root.MaxDepth--
-			}
-		case "e":
-			if m.step == 2 {
-				m.addingExclude = true
-				m.excludeInput = ""
-			} else if m.step == 5 {
-				m.addingEmail = true
-				m.emailInput = ""
-			}
-		case "a":
-			if m.step == 1 {
-				m.addingLocation = true
-				m.locationInput = ""
-			}
-		case "d", "delete", "backspace":
-			if m.step == 2 && m.cursor < len(m.excludes) {
-				value := m.excludes[m.cursor]
-				m.excludes = append(m.excludes[:m.cursor], m.excludes[m.cursor+1:]...)
-				delete(m.selectedExcludes, value)
-				if m.cursor >= len(m.excludes) && m.cursor > 0 {
-					m.cursor--
-				}
-			}
-		case "y", "Y":
-			if m.step == 6 {
-				return m, m.apply()
-			}
-		}
-	}
-	return m, nil
-}
-
-func (m model) startDiscovery() tea.Cmd {
-	var roots []setup.SearchRoot
-	for _, r := range m.local {
-		if m.selected[searchRootKey(r)] {
-			roots = append(roots, r)
-		}
-	}
-	for _, r := range m.external {
-		if m.selected[searchRootKey(r)] {
-			roots = append(roots, r)
-		}
-	}
-	discover := m.discover
-	ctx := m.ctx
-	excludes := make([]string, 0, len(m.excludes))
-	for _, exclude := range m.excludes {
-		if m.selectedExcludes[exclude] {
-			excludes = append(excludes, exclude)
-		}
-	}
-	existing := append([]config.Root(nil), m.config.Roots...)
-	progress := m.progress
-	return tea.Batch(nextProgress(), func() tea.Msg {
-		result := discover(ctx, roots, excludes, func(root, name string, done, total int) {
-			progress.mu.Lock()
-			if total == 0 {
-				progress.text = fmt.Sprintf("%s · %s", root, name)
-			} else {
-				progress.text = fmt.Sprintf("Validating %s · %s · %d/%d Git markers", root, name, done, total)
-			}
-			progress.mu.Unlock()
-		})
-		if len(roots) == 0 {
-			result.Warnings = append(result.Warnings, "No search locations were selected; repository discovery was skipped.")
-		}
-		emails := observedEmails(result.Candidates)
-		return discoveryDone{result: result, suggestions: setup.Suggestions(result.Candidates, existing), emails: emails}
-	})
-}
-
-func (m model) apply() tea.Cmd {
-	return func() tea.Msg {
-		var roots []config.Root
-		for _, s := range m.suggestions {
-			if s.Selected {
-				roots = append(roots, s.Root)
-			}
-		}
-		if len(roots) == 0 {
-			m.status = "Select at least one root before applying."
-			return applyMessage{m}
-		}
-		next := cloneConfig(m.config)
-		next.Roots = roots
-		next.GlobalExcludes = make([]string, 0, len(m.excludes))
-		for _, exclude := range m.excludes {
-			if m.selectedExcludes[exclude] {
-				next.GlobalExcludes = append(next.GlobalExcludes, exclude)
-			}
-		}
-		if err := setup.ValidateSetupConfig(next); err != nil {
-			m.status = "Setup was not applied: " + err.Error()
-			return applyMessage{m}
-		}
-		var selected []string
-		for _, email := range m.emails {
-			if m.selectedEmails[email] {
-				selected = append(selected, email)
-			}
-		}
-		if len(m.selectedEmails) > 0 || next.Report != nil {
-			if next.Report == nil {
-				next.Report = &config.ReportConfig{}
-			}
-			next.Report.AuthorEmails = selected
-		}
-		original, err := os.ReadFile(m.path)
-		if os.IsNotExist(err) {
-			original = nil
-		} else if err != nil {
-			m.status = err.Error()
-			return applyMessage{m}
-		}
-		data, err := setup.PreviewConfig(original, next)
-		if err == nil {
-			appliedAt := m.previewAt
-			if appliedAt.IsZero() {
-				appliedAt = time.Now()
-			}
-			_, err = setup.ApplyConfig(m.path, data, appliedAt)
-		}
-		if err != nil {
-			m.status = "Setup was not applied: " + err.Error()
-			return applyMessage{m}
-		}
-		m.config = next
-		m.step = 7
-		m.status = "Configuration saved. The repository index was not changed."
-		return applyMessage{m}
-	}
-}
-
-func (m model) View() string {
-	if m.width <= 0 {
-		m.width = 80
-	}
-	labels := []string{"Review", "Environments", "Exclusions", "Discovery", "Roots & depth", "Report identity", "Preview & apply", "Saved"}
-	var b strings.Builder
-	fmt.Fprintf(&b, "ROG SETUP  ·  %s  ·  %02d/%02d\n", strings.ToUpper(labels[min(m.step, len(labels)-1)]), m.step+1, len(labels))
-	writeRule(&b, m.width)
-	b.WriteByte('\n')
-	writeWrapped(&b, setupQuestions[min(m.step, len(setupQuestions)-1)], m.width)
-	b.WriteString("\n\n")
-	header := b.String()
-	b.Reset()
-	switch m.step {
-	case 0:
-		if m.showReviewDetails {
-			b.WriteString("CURRENT CONFIGURATION\n")
-			b.WriteString("Config file\n")
-			writeIndentedWrapped(&b, "  ", compactPath(m.path, max(1, m.width-2)), m.width)
-			fmt.Fprintf(&b, "\nConfigured Roots · %d\n", len(m.config.Roots))
-			if len(m.config.Roots) == 0 {
-				b.WriteString("  None\n")
-			}
-			for _, r := range m.config.Roots {
-				fmt.Fprintf(&b, "  • %s · depth %d\n", r.Name, r.MaxDepth)
-				writeIndentedWrapped(&b, "    ", compactPath(r.Path, max(1, m.width-4)), m.width)
-			}
-			indexSummary := fmt.Sprintf("Index: %d repositories", m.indexSummary.Count)
-			if m.indexSummary.UpdatedAt.IsZero() {
-				indexSummary += " · never scanned"
-			} else {
-				indexSummary += " · updated " + m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04")
-			}
-			writeIndentedWrapped(&b, "  ", indexSummary, m.width)
-			writeWrapped(&b, "Cross-OS bridge: "+m.indexSummary.BridgeStatus, m.width)
-			fmt.Fprintf(&b, "\nExclusions · %d\n", len(m.excludes))
-			writeIndentedWrapped(&b, "  ", listOrNone(m.excludes), m.width)
-		} else {
-			writeWrapped(&b, "Discover repositories, review suggested Configured Roots, then save.", m.width)
-			b.WriteString("\nCURRENT INDEX\n")
-			rootLabel := "Configured Roots"
-			if len(m.config.Roots) == 1 {
-				rootLabel = "Configured Root"
-			}
-			fmt.Fprintf(&b, "  %d repositories\n  %d %s\n", m.indexSummary.Count, len(m.config.Roots), rootLabel)
-			if m.indexSummary.UpdatedAt.IsZero() {
-				b.WriteString("  Last scan: never\n")
-			} else {
-				fmt.Fprintf(&b, "  Last scan: %s\n", m.indexSummary.UpdatedAt.Format("Jan 2, 2006 at 15:04"))
-			}
-			b.WriteByte('\n')
-			writeWrapped(&b, "Nothing is saved until you confirm the preview.", m.width)
-			b.WriteByte('\n')
-		}
-	case 1:
-		if runtime.GOOS == "windows" {
-			writeWrapped(&b, "Selected WSL distros start during discovery.", m.width)
-		} else {
-			writeWrapped(&b, "Windows locations use the installed rog.exe during discovery.", m.width)
-		}
-		b.WriteString("\n\n")
-		totalRoots := len(m.local) + len(m.external)
-		start, end := listWindow(totalRoots, m.cursor, m.visibleRows(2))
-		if (start > 0 || end < totalRoots) && m.visibleRows(2) > 1 {
-			fmt.Fprintf(&b, "Showing locations %d-%d of %d\n", start+1, end, totalRoots)
-		}
-		for i := start; i < end; i++ {
-			var r setup.SearchRoot
-			if i < len(m.local) {
-				r = m.local[i]
-			} else {
-				r = m.external[i-len(m.local)]
-			}
-			mark := " "
-			if m.selected[searchRootKey(r)] {
-				mark = "✓"
-			}
-			cursor := " "
-			if m.cursor == i {
-				cursor = ">"
-			}
-			name := displayRootName(r.Name, r.Windows, r.WSL, r.Distro)
-			fmt.Fprintf(&b, "%s [%s] %s\n", cursor, mark, name)
-			writeIndentedWrapped(&b, "    ", compactPath(r.Path, max(1, m.width-4)), m.width)
-		}
-		if m.addingLocation {
-			fmt.Fprintf(&b, "Additional search path: %s_\n", m.locationInput)
-			if m.status != "" {
-				writeIndentedWrapped(&b, "  ! ", m.status, m.width)
-			}
-		}
-	case 2:
-		writeWrapped(&b, "Checked names are skipped during discovery. Built-in system and cache exclusions always apply.", m.width)
-		b.WriteString("\n\n")
-		start, end := listWindow(len(m.excludes), m.cursor, m.visibleRows(1))
-		if start > 0 || end < len(m.excludes) {
-			fmt.Fprintf(&b, "Showing exclusions %d-%d of %d\n", start+1, end, len(m.excludes))
-		}
-		for i := start; i < end; i++ {
-			exclude := m.excludes[i]
-			mark, cursor := " ", " "
-			if m.selectedExcludes[exclude] {
-				mark = "✓"
-			}
-			if i == m.cursor {
-				cursor = ">"
-			}
-			fmt.Fprintf(&b, "%s [%s] %s\n", cursor, mark, exclude)
-		}
-		if m.addingExclude {
-			fmt.Fprintf(&b, "Add excluded directory name: %s_\n", m.excludeInput)
-		}
-	case 3:
-		if m.busy {
-			b.WriteString("Searching selected locations\n")
-			writeWrapped(&b, m.status, m.width)
-			b.WriteByte('\n')
-		} else {
-			writeWrapped(&b, m.status, m.width)
-			fmt.Fprintf(&b, "\n\n%d directories skipped · %d overlapping Git markers\n", m.result.ExcludedDirectories, m.result.Overlaps)
-			for _, w := range m.result.Warnings {
-				writeIndentedWrapped(&b, "  ! ", w, m.width)
-			}
-		}
-	case 4:
-		writeWrapped(&b, "Depth 4 reaches 3 folders below a root.", m.width)
-		b.WriteString("\n\n")
-		start, end := listWindow(len(m.suggestions), m.cursor, m.visibleRows(2))
-		if (start > 0 || end < len(m.suggestions)) && m.visibleRows(2) > 1 {
-			fmt.Fprintf(&b, "Showing roots %d-%d of %d\n", start+1, end, len(m.suggestions))
-		}
-		for i := start; i < end; i++ {
-			s := m.suggestions[i]
-			mark := " "
-			if s.Selected {
-				mark = "✓"
-			}
-			cursor := " "
-			if i == m.cursor {
-				cursor = ">"
-			}
-			coverage := setup.CountCoveredCandidates(m.result.Candidates, []config.Root{s.Root}, m.selectedExcludesList())
-			fmt.Fprintf(&b, "%s [%s] %s · depth %d\n", cursor, mark, displayRootName(s.Root.Name, s.Root.Windows, s.Root.WSL, s.Root.WSLDistro), s.Root.MaxDepth)
-			prefix := fmt.Sprintf("    %d found · %d covered · ", s.Count, coverage)
-			pathWidth := max(1, m.width-ansi.StringWidth(prefix))
-			writeIndentedWrapped(&b, prefix, compactPath(s.Root.Path, pathWidth), m.width)
-		}
-		if len(m.suggestions) == 0 {
-			b.WriteString("No valid discoveries. Existing roots are shown only if their filesystem was searched.\n")
-		}
-		covered := setup.CountCoveredCandidates(m.result.Candidates, selectedRoots(m.suggestions), m.selectedExcludesList())
-		writeWrapped(&b, fmt.Sprintf("Coverage: %d/%d discoveries covered", covered, len(m.result.Candidates)), m.width)
-		b.WriteByte('\n')
-	case 5:
-		writeWrapped(&b, "Reports match commits by Git author email.", m.width)
-		b.WriteByte('\n')
-		writeWrapped(&b, "No selection uses each repo's Git email.", m.width)
-		b.WriteString("\n\n")
-		start, end := listWindow(len(m.emails), m.cursor, m.visibleRows(1))
-		if (start > 0 || end < len(m.emails)) && m.visibleRows(1) > 1 {
-			fmt.Fprintf(&b, "Showing identities %d-%d of %d\n", start+1, end, len(m.emails))
-		}
-		for i := start; i < end; i++ {
-			email := m.emails[i]
-			mark := " "
-			if m.selectedEmails[email] {
-				mark = "✓"
-			}
-			cursor := " "
-			if i == m.cursor {
-				cursor = ">"
-			}
-			fmt.Fprintf(&b, "%s [%s] %s\n", cursor, mark, email)
-		}
-		if m.addingEmail {
-			fmt.Fprintf(&b, "Add email: %s_\n", m.emailInput)
-		} else if len(m.emails) == 0 {
-			b.WriteString("No email suggestions found.\n")
-		}
-	case 6:
-		var selectedExcludes []string
-		for _, exclude := range m.excludes {
-			if m.selectedExcludes[exclude] {
-				selectedExcludes = append(selectedExcludes, exclude)
-			}
-		}
-		proposedRoots := selectedRoots(m.suggestions)
-		covered := setup.CountCoveredCandidates(m.result.Candidates, proposedRoots, selectedExcludes)
-		b.WriteString("PROPOSED CHANGES\n\nCONFIGURED ROOTS\n  Before\n")
-		writeRootPreview(&b, m.config.Roots, m.width)
-		b.WriteString("  After\n")
-		writeRootPreview(&b, proposedRoots, m.width)
-		fmt.Fprintf(&b, "\nCOVERAGE\n  %d of %d discovered repositories covered\n", covered, len(m.result.Candidates))
-		uncovered := len(m.result.Candidates) - covered
-		if uncovered > 0 {
-			writeIndentedWrapped(&b, "  ! ", fmt.Sprintf("%d are outside selected roots, beyond depth limits, or excluded.", uncovered), m.width)
-		}
-		var picked []string
-		for _, e := range m.emails {
-			if m.selectedEmails[e] {
-				picked = append(picked, e)
-			}
-		}
-		var oldEmails []string
-		if m.config.Report != nil {
-			oldEmails = m.config.Report.AuthorEmails
-		}
-		b.WriteString("\nEXCLUDED DIRECTORY NAMES\n")
-		writeIndentedWrapped(&b, "  Before: ", listOrNone(m.config.GlobalExcludes), m.width)
-		writeIndentedWrapped(&b, "  After:  ", listOrNone(selectedExcludes), m.width)
-		b.WriteString("\nREPORT AUTHOR EMAILS\n")
-		writeIndentedWrapped(&b, "  Before: ", reportEmailValue(oldEmails), m.width)
-		writeIndentedWrapped(&b, "  After:  ", reportEmailValue(picked), m.width)
-		backup := "No current config file; no backup will be created."
-		if _, err := os.Stat(m.path); err == nil {
-			at := m.previewAt
-			if at.IsZero() {
-				at = time.Now()
-			}
-			backup = filepath.Join(filepath.Dir(m.path), "setup-history", at.Local().Format("20060102-150405.000000000")+".yml")
-		}
-		b.WriteString("\nSAVE DETAILS\n  Config file\n")
-		writeIndentedWrapped(&b, "    ", compactPath(m.path, max(1, m.width-4)), m.width)
-		b.WriteString("  Backup · mode 0600\n")
-		writeIndentedWrapped(&b, "    ", compactPath(backup, max(1, m.width-4)), m.width)
-		writeIndentedWrapped(&b, "  ", "Keeps five revisions; other YAML keys are preserved.", m.width)
-		warningCount := len(m.result.Warnings)
-		if uncovered > 0 {
-			warningCount++
-		}
-		if warningCount > 0 {
-			fmt.Fprintf(&b, "\nWARNINGS · %d\n", warningCount)
-			if uncovered > 0 {
-				writeIndentedWrapped(&b, "  ! ", fmt.Sprintf("%d valid discoveries are not covered by the proposed Configured Roots.", uncovered), m.width)
-			}
-			for _, warning := range m.result.Warnings {
-				writeIndentedWrapped(&b, "  ! ", warning, m.width)
-			}
-		}
-		if m.status != "" {
-			fmt.Fprintf(&b, "\n%s\n", m.status)
-		}
-	case 7:
-		writeWrapped(&b, m.status, m.width)
-		b.WriteByte('\n')
-	}
-	footer := m.actionBlock(strings.Count(b.String(), "\n")+1 > max(1, m.height-9))
-	return fitSetupViewport(header+b.String()+footer, m.width, m.color, m.height, m.scroll)
-}
-
 func addedSearchRoot(value string) (setup.SearchRoot, bool) {
 	if runtime.GOOS != "windows" && setup.IsWindowsDrivePath(value) {
 		trimmed := strings.TrimRight(value, `\/`)
@@ -963,59 +307,6 @@ func addedSearchRoot(value string) (setup.SearchRoot, bool) {
 		return setup.SearchRoot{Name: name, Path: value}, true
 	}
 	return setup.SearchRoot{}, false
-}
-
-func (m model) actionBlock(previewScroll bool) string {
-	var b strings.Builder
-	title, primary, hint := "NEXT", "", ""
-	switch m.step {
-	case 0:
-		primary = "Press Enter to choose locations"
-		hint = "d view settings · Ctrl+C cancel"
-		if m.showReviewDetails {
-			hint = "d hide settings · Ctrl+C cancel"
-			if previewScroll {
-				hint = "d hide settings · ↑/↓ review · Ctrl+C cancel"
-			}
-		}
-	case 1:
-		primary, hint = "Press Enter to review exclusions", "↑/↓ move · Space toggle · a add · b back"
-		if m.addingLocation {
-			primary, hint = "Press Enter to add this location", "Esc cancel entry · Ctrl+C cancel setup"
-		}
-	case 2:
-		primary, hint = "Press Enter to start discovery", "↑/↓ move · Space toggle · e add · d remove"
-		if m.addingExclude {
-			primary, hint = "Press Enter to add this name", "Esc cancel entry · Ctrl+C cancel setup"
-		}
-	case 3:
-		if m.busy {
-			title, primary, hint = "WORKING", "Discovery is running", "Ctrl+C cancel discovery"
-		} else {
-			primary, hint = "Press Enter to choose roots", "b back to locations · Ctrl+C cancel"
-			if previewScroll {
-				hint = "↑/↓ review findings · b back · Ctrl+C cancel"
-			}
-		}
-	case 4:
-		primary, hint = "Press Enter to review report emails", "↑/↓ move · Space toggle · +/− depth"
-	case 5:
-		primary, hint = "Press Enter to preview changes", "↑/↓ move · Space select · e add"
-		if m.addingEmail {
-			primary, hint = "Press Enter to add this email", "Esc cancel entry · Ctrl+C cancel setup"
-		}
-	case 6:
-		primary, hint = "Press y to save this configuration", "b return to report emails · Ctrl+C cancel"
-		if previewScroll {
-			hint = "↑/↓ review changes · b return to report emails · Ctrl+C cancel"
-		}
-	case 7:
-		primary, hint = "Press s to scan the Configured Roots", "Press r to finish without scanning · q quit"
-	}
-	fmt.Fprintf(&b, "\n%s\n", title)
-	writeIndentedWrapped(&b, "  › ", primary, m.width)
-	writeIndentedWrapped(&b, "    ", hint, m.width)
-	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func (m model) visibleRows(itemLines int) int {
@@ -1161,20 +452,6 @@ func compactPath(value string, width int) string {
 		suffix[i], suffix[j] = suffix[j], suffix[i]
 	}
 	return left.String() + "…" + string(suffix)
-}
-
-func listOrNone(items []string) string {
-	if len(items) == 0 {
-		return "None"
-	}
-	return strings.Join(items, ", ")
-}
-
-func reportEmailValue(items []string) string {
-	if len(items) == 0 {
-		return "Use each repository's Git email"
-	}
-	return strings.Join(items, ", ")
 }
 
 func writeRootPreview(b *strings.Builder, roots []config.Root, width int) {
@@ -1430,62 +707,6 @@ func cloneConfig(c *config.Config) *config.Config {
 	}
 	return &n
 }
-func observedEmails(candidates []setup.Candidate) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, c := range candidates {
-		values := append([]string{c.Email}, c.AuthorEmails...)
-		for _, e := range values {
-			e = strings.TrimSpace(e)
-			if e != "" && !seen[strings.ToLower(e)] {
-				seen[strings.ToLower(e)] = true
-				out = append(out, e)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-func contains(items []string, value string) bool {
-	for _, item := range items {
-		if strings.EqualFold(item, value) {
-			return true
-		}
-	}
-	return false
-}
-
-func searchRootKey(root setup.SearchRoot) string {
-	source := "native"
-	switch {
-	case root.WSL:
-		source = "wsl:" + strings.ToLower(root.Distro)
-	case root.Windows:
-		source = "windows"
-	}
-	return strings.ToLower(source + "|" + root.Name + "|" + root.Path)
-}
-
-func selectedRoots(suggestions []setup.RootSuggestion) []config.Root {
-	var roots []config.Root
-	for _, suggestion := range suggestions {
-		if suggestion.Selected {
-			roots = append(roots, suggestion.Root)
-		}
-	}
-	return roots
-}
-
-func (m model) selectedExcludesList() []string {
-	var excludes []string
-	for _, exclude := range m.excludes {
-		if m.selectedExcludes[exclude] {
-			excludes = append(excludes, exclude)
-		}
-	}
-	return excludes
-}
-
 func dropLastRune(s string) string {
 	if s == "" {
 		return s

@@ -17,9 +17,10 @@ func TestDiscoverAcceptsTypedWindowsWorkerResult(t *testing.T) {
 	script := `#!/bin/sh
 printf 'ROG_WINDOWS_WORKER_READY 3\n'
 request=$(cat)
+case "$request" in *'"operation":"discover_locations"'*) ;; *) echo 'wrong discovery operation' >&2; exit 2 ;; esac
 case "$request" in *'"windows":true'*) ;; *) echo 'missing Windows root flag' >&2; exit 2 ;; esac
 printf '%s\n' '{"type":"discovery_progress","discovery_progress":{"root":"dev","name":"repo","completed":1,"total":1}}'
-printf '%s\n' '{"type":"discovery_result","result":{"version":3,"discovery":{"candidates":[{"path":"C:\\Users\\me\\projects\\repo","root":"dev","windows":true,"valid":true}]}}}'
+printf '%s\n' '{"type":"discovery_result","result":{"version":3,"discovery":{"candidates":[{"path":"C:\\Users\\me\\projects\\repo","root":"dev","windows":true,"valid":false}]}}}'
 `
 	if err := os.WriteFile(executable, []byte(script), 0700); err != nil {
 		t.Fatal(err)

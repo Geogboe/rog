@@ -236,7 +236,7 @@ func (b Bridge) Discover(ctx context.Context, roots []config.Root, excludes []st
 		return setup.DiscoveryResult{}, err
 	}
 	_ = binary
-	payload, err := json.Marshal(workerproto.Request{Version: workerproto.Version, Operation: "discover", DiscoveryRoots: toSearchRoots(roots), DiscoveryExcludes: excludes})
+	payload, err := json.Marshal(workerproto.Request{Version: workerproto.Version, Operation: "discover_locations", DiscoveryRoots: toSearchRoots(roots), DiscoveryExcludes: excludes})
 	if err != nil {
 		return setup.DiscoveryResult{}, err
 	}

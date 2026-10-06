@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestDiscoverValidatesMarkersAndHonorsExcludes(t *testing.T) {
+func TestDiscoverLocatesMarkersAndHonorsExcludes(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "projects", "real repo")
 	if err := os.MkdirAll(repo, 0755); err != nil {
@@ -34,14 +34,14 @@ func TestDiscoverValidatesMarkersAndHonorsExcludes(t *testing.T) {
 	}
 }
 
-func TestDiscoverReportsRejectedGitMarker(t *testing.T) {
+func TestDiscoverLeavesGitMarkerValidationToFullScan(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "not-git")
 	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	result := Discover(context.Background(), []SearchRoot{{Name: "test", Path: root}}, nil, nil)
-	if len(result.Candidates) != 0 || result.Rejected != 1 {
+	if len(result.Candidates) != 1 || result.Rejected != 0 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 }
@@ -189,5 +189,32 @@ func TestSuggestionsDoNotSelectCoveredNestedRootButKeepItAvailable(t *testing.T)
 	}
 	if covered := CountCoveredCandidates(candidates, []config.Root{parent.Root}, nil); covered != 2 {
 		t.Fatalf("parent coverage=%d, want both discoveries", covered)
+	}
+}
+
+func TestDiscoverNeedsNoGitAndDoesNotReadMarkerContents(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"directory", "worktree"} {
+		repo := filepath.Join(root, name)
+		if err := os.MkdirAll(repo, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if name == "directory" {
+			if err := os.Mkdir(filepath.Join(repo, ".git"), 0755); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(filepath.Join(repo, ".git"), []byte("intentionally invalid git contents"), 0000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", t.TempDir())
+	result := Discover(context.Background(), []SearchRoot{{Name: "local", Path: root}}, nil, nil)
+	if len(result.Candidates) != 2 || result.Rejected != 0 {
+		t.Fatalf("marker-only discovery: %+v", result)
+	}
+	for _, c := range result.Candidates {
+		if c.Valid || c.Email != "" || len(c.AuthorEmails) != 0 {
+			t.Fatal("discovery returned Git metadata")
+		}
 	}
 }
