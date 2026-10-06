@@ -66,6 +66,7 @@ type model struct {
 	discover                            DiscoverFunc
 	step, cursor, width, height, scroll int
 	color, busy                         bool
+	discovered                          bool
 	result                              setup.DiscoveryResult
 	suggestions                         []setup.RootSuggestion
 	progress                            *progressState

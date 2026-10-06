@@ -314,3 +314,56 @@ func TestWizardPreservesRawRootPathsAndUnknownFields(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedConflictRefreshCannotReuseStalePreview(t *testing.T) {
+	m := fixture(t)
+	m = enter(m)
+	changed := bytes.ReplaceAll(m.original, []byte("node_modules"), []byte("\"\""))
+	if err := os.WriteFile(m.path, changed, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m = m.apply()().(applyMessage).model
+	m = m.apply()().(applyMessage).model
+	data, _ := os.ReadFile(m.path)
+	if !bytes.Equal(data, changed) || m.step == 3 {
+		t.Fatal("second confirmation saved a stale preview after failed conflict refresh")
+	}
+}
+
+func TestManualEntryVisibleWithManyRoots(t *testing.T) {
+	m := fixture(t)
+	for i := 0; i < 12; i++ {
+		m.suggestions = append(m.suggestions, setup.RootSuggestion{Root: config.Root{Name: "other", Path: "/home/me/other", MaxDepth: 4}, Selected: true})
+	}
+	m.width, m.height = 80, 24
+	m = key(m, "a")
+	text := ansi.Strip(m.View())
+	if !strings.Contains(text, "Root path:") || !strings.Contains(text, "Environment:") {
+		t.Fatalf("entry is hidden below the root list:\n%s", text)
+	}
+}
+
+func TestManualRootIdentityNormalizesPathsWithinEnvironment(t *testing.T) {
+	pairs := [][2]config.Root{
+		{{Path: "/home/me/dev/"}, {Path: "/home/me/dev"}},
+		{{Path: `C:\Dev\`, Windows: true}, {Path: "c:/dev", Windows: true}},
+		{{Path: "/home/me/dev/./", WSL: true, WSLDistro: "Ubuntu"}, {Path: "/home/me/dev", WSL: true, WSLDistro: "Ubuntu"}},
+	}
+	for _, pair := range pairs {
+		if rootKey(pair[0]) != rootKey(pair[1]) {
+			t.Errorf("equivalent paths have different identity: %+v", pair)
+		}
+	}
+	if rootKey(config.Root{Path: "/home/me/dev", WSL: true, WSLDistro: "Ubuntu"}) == rootKey(config.Root{Path: "/home/me/dev", WSL: true, WSLDistro: "Debian"}) {
+		t.Fatal("different environments collapsed")
+	}
+}
+
+func TestUnrunDiscoveryDoesNotClaimZeroLocations(t *testing.T) {
+	m := fixture(t)
+	m.height = 0
+	text := ansi.Strip(m.View())
+	if !strings.Contains(text, "Discovery has not checked") || strings.Contains(text, "0 repository locations") {
+		t.Fatal("unrun discovery displayed a false zero")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -307,4 +308,22 @@ func formatProgressDuration(duration time.Duration) string {
 
 func clearLine() string {
 	return "\x1b[2K"
+}
+
+// scanTerminal gives an interactive approval exclusive ownership of the console.
+// Progress frames are skipped while the operator is answering that prompt.
+type scanTerminal struct{ mu sync.Mutex }
+
+func (t *scanTerminal) approve(prompt func() bool) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return prompt()
+}
+
+func (t *scanTerminal) renderProgress(render func()) {
+	if !t.mu.TryLock() {
+		return
+	}
+	defer t.mu.Unlock()
+	render()
 }

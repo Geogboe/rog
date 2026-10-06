@@ -133,3 +133,34 @@ func TestRichProgressFitsNarrowTerminal(t *testing.T) {
 		t.Fatalf("line width %d exceeds terminal: %q", got, line)
 	}
 }
+
+func TestWorkerApprovalRemainsVisibleUntilAnswered(t *testing.T) {
+	var terminal scanTerminal
+	var screen strings.Builder
+	ready := make(chan struct{})
+	answer := make(chan struct{})
+	finished := make(chan bool, 1)
+	go func() {
+		finished <- terminal.approve(func() bool {
+			screen.WriteString("Create or replace this cached executable? [y/N] ")
+			close(ready)
+			<-answer
+			return true
+		})
+	}()
+	<-ready
+	for i := 0; i < 4; i++ {
+		terminal.renderProgress(func() { screen.Reset(); screen.WriteString("[scan] updating progress") })
+	}
+	if !strings.Contains(screen.String(), "[y/N]") {
+		t.Fatal("progress overwrote unanswered approval")
+	}
+	close(answer)
+	if !<-finished {
+		t.Fatal("approval result was lost")
+	}
+	terminal.renderProgress(func() { screen.WriteString("[scan] resumed") })
+	if !strings.Contains(screen.String(), "resumed") {
+		t.Fatal("progress did not resume after approval")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -79,6 +80,7 @@ func (m model) draftRoots() []config.Root {
 }
 
 func (m *model) prepareReview() error {
+	m.preview = nil // Failed review generation must invalidate any prior proposal.
 	next := cloneConfig(m.config)
 	next.Roots = m.draftRoots()
 	if err := setup.ValidateSetupConfig(next); err != nil {
@@ -128,6 +130,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case discoveryDone:
 		m.busy = false
 		m.result = x.result
+		m.discovered = true
 		// Merge recommendations without replacing manual choices or removed rows.
 		for _, recommendation := range x.suggestions {
 			found := false
@@ -286,12 +289,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func rootKey(r config.Root) string {
-	// Source is part of identity; equal paths in different distros are distinct.
+	// Normalize within the filesystem owner; distributions remain distinct.
+	owner := "native"
 	value := r.Path
-	if r.Windows || setup.IsWindowsDrivePath(value) {
+	if r.WSL {
+		owner = "wsl:" + r.WSLDistro
+	} else if r.Windows || setup.IsWindowsDrivePath(value) || runtime.GOOS == "windows" {
+		owner = "windows"
 		value = strings.ToLower(strings.ReplaceAll(value, "\\", "/"))
 	}
-	return fmt.Sprintf("%t|%t|%s|%s", r.WSL, r.Windows, r.WSLDistro, value)
+	return owner + "|" + path.Clean(value)
 }
 
 func (m model) updateLocation(key tea.KeyMsg) model {
@@ -410,7 +417,7 @@ func (m model) apply() tea.Cmd {
 			}
 			m.config, m.original = latest, current
 			if err := m.prepareReview(); err != nil {
-				m.status = err.Error()
+				m.status = "Config changed, but the refreshed proposal is invalid: " + err.Error() + ". Correct the config or go back to edit roots; nothing was saved."
 				return applyMessage{m}
 			}
 			m.status = "Config changed while setup was open. Review the refreshed proposal and press y again to save."
@@ -467,6 +474,15 @@ func (m model) View() string {
 		primary, hint = "Enter: continue with selected distributions", "↑/↓ move · Space toggle · n no WSL · Ctrl+C cancel"
 	case 1:
 		b.WriteString("Add project roots and choose how far below each root to search.\nDepth 1 finds dev/repo; depth 2 also finds dev/team/repo.\n\n")
+		if m.addingLocation {
+			source := "native (Windows drive paths use Windows)"
+			if m.inputDistro != "" {
+				source = "WSL " + m.inputDistro
+			}
+			fmt.Fprintf(&b, "\nEnvironment: %s\nRoot path: %s_\nDepth: %d (adjust after adding)\n", source, m.locationInput, m.inputDepth)
+			primary, hint = "Enter: accept root path", "Tab choose environment · Esc cancel entry · Ctrl+C cancel setup"
+			break
+		}
 		start, end := listWindow(len(m.suggestions), m.cursor, m.visibleRows(3))
 		for i := start; i < end; i++ {
 			s := m.suggestions[i]
@@ -486,7 +502,12 @@ func (m model) View() string {
 			}
 			fmt.Fprintf(&b, "%s [%s] %s · %s · depth %d\n", cursor, mark, s.Root.Name, source, s.Root.MaxDepth)
 			writeIndentedWrapped(&b, "    ", s.Root.Path, m.width)
-			fmt.Fprintf(&b, "    %d repository locations pending validation\n", s.Count)
+			if m.discovered {
+				count := setup.CountCoveredCandidates(m.result.Candidates, []config.Root{s.Root}, m.config.GlobalExcludes)
+				fmt.Fprintf(&b, "    %d repository locations within this depth, pending validation\n", count)
+			} else {
+				b.WriteString("    Discovery has not checked this root yet.\n")
+			}
 			if s.MaxDepth > s.Root.MaxDepth {
 				fmt.Fprintf(&b, "    Recommended depth: %d\n", s.MaxDepth)
 			}
@@ -496,14 +517,7 @@ func (m model) View() string {
 		}
 		b.WriteString("Discovery finds locations only; Git information is collected by the optional full scan after saving.\n")
 		primary, hint = "Enter: accept selected roots and review settings", "a add · e edit · Space select/remove · +/− depth · d discover · b back"
-		if m.addingLocation {
-			source := "native (Windows drive paths use Windows)"
-			if m.inputDistro != "" {
-				source = "WSL " + m.inputDistro
-			}
-			fmt.Fprintf(&b, "\nEnvironment: %s\nRoot path: %s_\nDepth: %d (adjust after adding)\n", source, m.locationInput, m.inputDepth)
-			primary, hint = "Enter: accept root path", "Tab choose environment · Esc cancel entry · Ctrl+C cancel setup"
-		}
+
 	case 2:
 		if len(m.result.Warnings) > 0 {
 			fmt.Fprintf(&b, "Partial discovery: %d warnings (scroll to review).\n\n", len(m.result.Warnings))

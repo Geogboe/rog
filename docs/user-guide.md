@@ -106,6 +106,7 @@ or refresh the index. Press `s` or `y` to scan, or `n` or `r` to finish. Declini
 interrupting, or failing this scan leaves the saved config intact. Each native
 installation maintains its own config and index. A noninteractive terminal can
 use `rog init` for a starter configuration, then run setup in a terminal.
+Developer review and operator verification guidance is in [setup QA](setup-qa.md).
 
 ### `rog scan`
 

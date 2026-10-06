@@ -107,11 +107,16 @@ func runScan(cmd *cobra.Command, args []string) {
 		exitWithError("Failed to load index: %v", err)
 	}
 
+	// Serialize terminal output while a worker approval owns the console.
+	var terminal scanTerminal
+	approveWorker := func(distro, cachePath string) bool {
+		return terminal.approve(func() bool { return approveWSLWorker(distro, cachePath) })
+	}
 	// Create scanner
 	reuseExisting := !scanFull && !scanRemote
 	scan := scanner.New(cfg, idx).WithRemoteCheck(scanRemote).WithDryRun(scanDryRun).WithReuseExisting(reuseExisting)
 	if runtime.GOOS == "windows" {
-		scan.WithWSLScan((wslbridge.Bridge{Approve: approveWSLWorker}).Scan)
+		scan.WithWSLScan((wslbridge.Bridge{Approve: approveWorker}).Scan)
 	} else {
 		scan.WithWindowsScan((windowsbridge.Bridge{}).Scan)
 	}
@@ -131,19 +136,21 @@ func runScan(cmd *cobra.Command, args []string) {
 			for {
 				select {
 				case <-ticker.C:
-					metrics := scan.SnapshotMetrics()
-					fmt.Fprint(os.Stdout, renderer.Update(scanProgressSnapshot{
-						Phase:             scanPhaseScan,
-						RootsTotal:        metrics.RootsTotal,
-						RootsCompleted:    metrics.RootsCompleted,
-						ReposFound:        metrics.ReposFound,
-						ReposReused:       metrics.ReposReused,
-						ReposRefreshed:    metrics.ReposRefreshed,
-						StatusUnavailable: metrics.StatusUnavailable,
-						CurrentRoot:       metrics.CurrentRoot,
-						CurrentRepo:       metrics.CurrentRepo,
-						Duration:          time.Since(start),
-					}))
+					terminal.renderProgress(func() {
+						metrics := scan.SnapshotMetrics()
+						fmt.Fprint(os.Stdout, renderer.Update(scanProgressSnapshot{
+							Phase:             scanPhaseScan,
+							RootsTotal:        metrics.RootsTotal,
+							RootsCompleted:    metrics.RootsCompleted,
+							ReposFound:        metrics.ReposFound,
+							ReposReused:       metrics.ReposReused,
+							ReposRefreshed:    metrics.ReposRefreshed,
+							StatusUnavailable: metrics.StatusUnavailable,
+							CurrentRoot:       metrics.CurrentRoot,
+							CurrentRepo:       metrics.CurrentRepo,
+							Duration:          time.Since(start),
+						}))
+					})
 				case <-stopProgress:
 					return
 				}
@@ -357,7 +364,7 @@ func approveWSLWorker(distro, cachePath string) bool {
 		return false
 	}
 	defer output.Close()
-	fmt.Fprintf(output, "rog needs to install its bundled worker in WSL distro %s\nPath: %s\nCreate or replace this cached executable? [y/N] ", distro, cachePath)
+	fmt.Fprintf(output, "\nrog needs to install its bundled worker in WSL distro %s\nPath: %s\nCreate or replace this cached executable? [y/N] ", distro, cachePath)
 	answer, err := bufio.NewReader(input).ReadString('\n')
 	if err != nil {
 		return false

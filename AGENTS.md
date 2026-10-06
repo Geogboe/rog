@@ -13,6 +13,7 @@
 - **Use conventional commits**: Follow the format `type(scope): description`
   - Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`
   - Example: `feat(scan): add remote sync capability`
+- **Before every push**: Complete a code review and a lessons-learned pass. Record durable findings in the appropriate repository documentation; see [setup QA guidance](docs/setup-qa.md).
 - **No confirmation needed**: Push commits without asking for permission
 - **Keep history clean**: But prioritize velocity over perfection
 

@@ -102,7 +102,7 @@ func Suggestions(candidates []Candidate, existing []config.Root) []RootSuggestio
 	return out
 }
 
-// CountCoveredCandidates returns how many validated discoveries would be
+// CountCoveredCandidates returns how many filesystem-discovered locations would be
 // reached by roots at their current depths and exclusions. Each repository is
 // counted once even when roots overlap.
 func CountCoveredCandidates(candidates []Candidate, roots []config.Root, globalExcludes []string) int {
