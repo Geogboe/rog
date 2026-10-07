@@ -20,20 +20,21 @@ import (
 )
 
 var (
-	listLang   []string
-	listTag    []string
-	listBranch string
-	listRoot   string
-	listDirty  bool
-	listClean  bool
-	listAhead  bool
-	listBehind bool
-	listSort   string
-	listLimit  int
-	listLong   bool
-	listShort  bool
-	listOutput string
-	listFields string
+	listLang    []string
+	listTag     []string
+	listBranch  string
+	listRoot    string
+	listDirty   bool
+	listClean   bool
+	listAhead   bool
+	listBehind  bool
+	listSort    string
+	listLimit   int
+	listLong    bool
+	listShort   bool
+	listOutput  string
+	listFields  string
+	listGroupBy string
 )
 
 var listCmd = &cobra.Command{
@@ -54,6 +55,10 @@ Output modes:
   --short: Minimal output (name, language, path)
   (default): Compact table (name, lang, branch, status, path)
   --long: Detailed output (adds author, remote URL)
+  --group-by root: Separate tables by root and environment
+  Paths use ~ under home, short nearby relative paths, or absolute paths.
+  WSL paths include the distribution when outside the current environment.
+  Truncated paths end in …; use rog path <project> for the complete path.
   --fields: Custom fields (comma-separated)
   --output, -o: table, json, yaml, or path
 
@@ -75,6 +80,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(listCmd)
+	listCmd.Flags().StringVar(&listGroupBy, "group-by", "", "Group table output by root (root)")
 
 	listCmd.Flags().StringSliceVar(&listLang, "lang", nil, "Filter by language")
 	listCmd.Flags().StringSliceVar(&listTag, "tag", nil, "Filter by tags (all must match)")
@@ -103,6 +109,13 @@ func runList(cmd *cobra.Command, args []string) {
 
 	if listOutput != "table" && listOutput != "json" && listOutput != "yaml" && listOutput != "path" {
 		exitWithError("Invalid output %q (valid: table, json, yaml, path)", listOutput)
+	}
+
+	if listGroupBy != "" && listGroupBy != "root" {
+		exitWithError("Invalid --group-by %q (valid: root)", listGroupBy)
+	}
+	if listGroupBy != "" && listOutput != "table" {
+		exitWithError("--group-by root requires --output table")
 	}
 
 	// Determine which fields to display
@@ -256,7 +269,11 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 			width = 80
 		}
 	}
-	writeTable(os.Stdout, repos, short, long, customFields, width, color)
+	if listGroupBy == "root" {
+		writeGroupedTable(os.Stdout, repos, short, long, customFields, width, color)
+	} else {
+		writeTable(os.Stdout, repos, short, long, customFields, width, color)
+	}
 }
 
 func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, customFields []string, width int, color bool) {
@@ -286,6 +303,21 @@ func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, custo
 		descMaxLen = 0 // Normal mode: no description
 	}
 
+	if width > 0 && long && len(customFields) == 0 && width < 90 {
+		fields = []string{"name", "status", "path"}
+		if width < 50 {
+			fields = []string{"name", "path"}
+		}
+	}
+
+	// At extreme widths even one-character cells and separators cannot fit.
+	if width > 0 && width < 3*len(fields)-2 {
+		fields = []string{"name", "path"}
+		if width < 4 {
+			fields = []string{"name"}
+		}
+	}
+
 	// Field display names (for headers)
 	fieldNames := map[string]string{
 		"name":        "NAME",
@@ -311,15 +343,7 @@ func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, custo
 			header[i] = strings.ToUpper(field)
 		}
 	}
-	// Check if root is in the fields
-	hasRoot := false
-	for _, field := range fields {
-		if field == "root" {
-			hasRoot = true
-			break
-		}
-	}
-
+	pathContext := currentListPathContext()
 	rows := make([][]string, 0, len(repos))
 	widths := make([]int, len(fields))
 	for i, heading := range header {
@@ -328,7 +352,10 @@ func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, custo
 	for _, repo := range repos {
 		values := make([]string, len(fields))
 		for i, field := range fields {
-			value := getFieldValue(repo, field, hasRoot, descMaxLen)
+			value := getFieldValue(repo, field, false, descMaxLen)
+			if field == "path" {
+				value = pathContext.display(repo)
+			}
 			if len(customFields) == 0 && !short && !long && field == "status" {
 				value = formatCompactStatus(repo)
 			}
@@ -344,6 +371,35 @@ func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, custo
 		rows = append(rows, values)
 	}
 
+	// Fit every mode, including custom fields and --short, without inserted
+	// newlines inside a path. Explicit ellipses identify incomplete values.
+	if width > 0 {
+		budget := width - 2*(len(widths)-1)
+		if budget < len(widths) {
+			budget = len(widths)
+		}
+		for {
+			total, biggest := 0, 0
+			for i, w := range widths {
+				total += w
+				if w > widths[biggest] {
+					biggest = i
+				}
+			}
+			if total <= budget || widths[biggest] <= 1 {
+				break
+			}
+			widths[biggest]--
+		}
+		for i := range header {
+			header[i] = ansi.Truncate(header[i], widths[i], "…")
+		}
+		for _, row := range rows {
+			for i := range row {
+				row[i] = ansi.Truncate(row[i], widths[i], "…")
+			}
+		}
+	}
 	writeTableRow(out, header, widths)
 	for rowIndex, values := range rows {
 		if color {
@@ -453,7 +509,7 @@ func colorTableCell(value, field string, repo *index.Repo) string {
 }
 
 // getFieldValue returns the value for a specific field from a repo
-func getFieldValue(repo *index.Repo, field string, hasRoot bool, descMaxLen int) string {
+func getFieldValue(repo *index.Repo, field string, _ bool, descMaxLen int) string {
 	switch field {
 	case "name":
 		return repo.Name
@@ -488,17 +544,7 @@ func getFieldValue(repo *index.Repo, field string, hasRoot bool, descMaxLen int)
 	case "root":
 		return repo.Root
 	case "path":
-		relPath := strings.ReplaceAll(repo.RelPath, "\\", "/")
-		// When root is shown separately, show relative path
-		// When root is not shown, show combined path (like in short mode)
-		if hasRoot {
-			return relPath
-		}
-		// Combine root and relpath for short mode
-		if repo.RelPath == "" {
-			return repo.Root
-		}
-		return repo.Root + "/" + relPath
+		return repo.AbsPath
 	case "remote":
 		remote := repo.RemoteURL
 		if len(remote) > 40 {
@@ -591,5 +637,42 @@ func outputYAML(repos []*index.Repo) {
 	enc := yaml.NewEncoder(os.Stdout)
 	if err := enc.Encode(repos); err != nil {
 		exitWithError("Failed to encode YAML: %v", err)
+	}
+}
+
+// Groups preserve result order and distinguish roots in separate environments.
+func writeGroupedTable(out io.Writer, repos []*index.Repo, short, long bool, fields []string, width int, color bool) {
+	type group struct {
+		label string
+		repos []*index.Repo
+	}
+	groups := []group{}
+	positions := map[string]int{}
+	for _, repo := range repos {
+		environment := "local"
+		if repo.IsWSL {
+			environment = "WSL " + distroLabel(repo.WSLDistro)
+		} else if repo.IsWindows {
+			environment = "Windows"
+		}
+		key := environment + "\x00" + repo.Root
+		i, ok := positions[key]
+		if !ok {
+			i = len(groups)
+			positions[key] = i
+			groups = append(groups, group{label: repo.Root + " · " + environment})
+		}
+		groups[i].repos = append(groups[i].repos, repo)
+	}
+	for i, g := range groups {
+		if i > 0 {
+			fmt.Fprintln(out)
+		}
+		label := cleanTableCell(g.label)
+		if width > 0 {
+			label = ansi.Truncate(label, width, "…")
+		}
+		fmt.Fprintln(out, label)
+		writeTable(out, g.repos, short, long, fields, width, color)
 	}
 }

@@ -101,8 +101,8 @@ func TestOutputTableShort(t *testing.T) {
 	assert.Contains(t, output, "Python")
 
 	// Should contain combined paths
-	assert.Contains(t, output, "test-root/path/to/repo1")
-	assert.Contains(t, output, "test-root/path/to/repo2")
+	assert.Contains(t, output, "/tmp/test-repo-1")
+	assert.Contains(t, output, "/tmp/test-repo-2")
 
 	// Should contain total count
 	assert.Contains(t, output, "Total: 2 repositories")
@@ -180,7 +180,7 @@ func TestColoredTableAlignsWithinTerminalWidth(t *testing.T) {
 			}
 			header, row := lines[0], lines[1]
 			if width >= 24 {
-				assert.Equal(t, strings.Index(header, "PATH"), ansi.StringWidth(row[:strings.Index(row, "test-root/")]))
+				assert.Equal(t, strings.Index(header, "PATH"), ansi.StringWidth(row[:strings.Index(row, "/tmp/")]))
 			}
 			if width >= 50 {
 				assert.Equal(t, strings.Index(header, "STATUS"), strings.Index(row, "clean"))
@@ -564,23 +564,23 @@ func TestCustomFieldsWithPath(t *testing.T) {
 	idx := createTestIndexForCmd()
 	repos := idx.List()
 
-	// Test path without root (should show combined path)
+	// Paths remain navigable independently of the root column.
 	output := captureOutput(func() {
 		outputTable(repos, false, false, []string{"name", "path"})
 	})
 
-	assert.Contains(t, output, "test-root/path/to/repo1")
-	assert.Contains(t, output, "test-root/path/to/repo2")
+	assert.Contains(t, output, "/tmp/test-repo-1")
+	assert.Contains(t, output, "/tmp/test-repo-2")
 
-	// Test path with root (should show relative path)
+	// Adding the root column must not change the path.
 	output2 := captureOutput(func() {
 		outputTable(repos, false, false, []string{"name", "root", "path"})
 	})
 
 	// Should show root and path separately
 	assert.Contains(t, output2, "test-root")
-	assert.Contains(t, output2, "path/to/repo1")
-	assert.Contains(t, output2, "path/to/repo2")
+	assert.Contains(t, output2, "/tmp/test-repo-1")
+	assert.Contains(t, output2, "/tmp/test-repo-2")
 	// Should NOT show combined path
 	lines := strings.Split(output2, "\n")
 	for _, line := range lines {
@@ -806,8 +806,8 @@ func TestFormatStatusUnavailable(t *testing.T) {
 	assert.NotContains(t, status, "clean")
 }
 
-func TestWindowsRelativePathDisplaysWithSlashes(t *testing.T) {
-	repo := &index.Repo{Root: "wsl", RelPath: `ai\ai-chatter`}
-	assert.Equal(t, "wsl/ai/ai-chatter", getFieldValue(repo, "path", false, 0))
-	assert.Equal(t, "ai/ai-chatter", getFieldValue(repo, "path", true, 0))
+func TestPathFieldPreservesStoredAbsolutePath(t *testing.T) {
+	repo := &index.Repo{Root: "wsl", RelPath: `ai\ai-chatter`, AbsPath: `C:\projects\ai\ai-chatter`}
+	assert.Equal(t, repo.AbsPath, getFieldValue(repo, "path", false, 0))
+	assert.Equal(t, repo.AbsPath, getFieldValue(repo, "path", true, 0))
 }

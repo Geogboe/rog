@@ -189,6 +189,9 @@ rog list --limit 10
 # Detailed output
 rog list --long
 
+# Separate tables by project root and environment
+rog list --group-by root
+
 # Machine-readable output
 rog list --output json
 rog list -o yaml
@@ -200,12 +203,24 @@ rog list -o path
 - **LANG**: Primary language
 - **BRANCH**: Current branch
 - **STATUS**: Local Git state and ahead/behind counts
-- **PATH**: Root and relative path
+- **PATH**: Navigable directory, using `~/…` under your home, a nearby relative
+  path when shorter (at most two parent directories), or an absolute path.
+  Paths containing shell metacharacters are quoted for POSIX shells on Linux
+  and PowerShell on Windows. Foreign WSL paths include `Distro:`; copy the
+  portion after the colon into `cd` inside that distro. Rog does not start WSL
+  to look up a foreign home or working directory, so those paths remain absolute.
 
 The default table uses color on supported terminals. `NO_COLOR` disables it, and
 redirected output has no color codes. Narrow terminals show fewer columns;
-`--long` and `--fields` expose the full field set. Use `-o json` or `-o yaml`
+`--long` exposes the full field set when space permits, and `--fields` selects
+custom columns. Use `-o json` or `-o yaml`
 for structured output, or `-o path` for one absolute path per line.
+
+Table paths stay on one logical line. Values that do not fit end in `…` and
+are **not complete paths**; use `rog path <project>` to retrieve the full path.
+This also applies to `--short`, `--long`, and custom fields. Grouping is opt-in
+with `--group-by root`, works only with table output, and keeps roots in
+different WSL distributions separate. JSON, YAML, and path output are unchanged.
 
 ### `rog report`
 
