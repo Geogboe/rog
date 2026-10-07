@@ -4,12 +4,31 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+// entryNotFoundError reports that an archive has no entry with the requested
+// name, as opposed to the archive being unreadable.
+type entryNotFoundError struct{ msg string }
+
+func (e *entryNotFoundError) Error() string { return e.msg }
+
+// extractOptional extracts name like extractBinary, but reports a name that is
+// not in the archive as found=false instead of an error. Any other failure is
+// still an error.
+func extractOptional(archivePath, name, destPath string) (found bool, err error) {
+	err = extractBinary(archivePath, name, destPath)
+	var missing *entryNotFoundError
+	if errors.As(err, &missing) {
+		return false, nil
+	}
+	return err == nil, err
+}
 
 // extractBinary extracts the file named binaryName from the archive at archivePath
 // and writes it to destPath. The archive format is determined from the filename extension.
@@ -57,7 +76,7 @@ func extractFromTarGz(archivePath, binaryName, destPath string) error {
 		}
 		return writeExtracted(tr, destPath, hdr.FileInfo().Mode())
 	}
-	return fmt.Errorf("binary %q not found in archive", binaryName)
+	return &entryNotFoundError{fmt.Sprintf("binary %q not found in archive", binaryName)}
 }
 
 // extractFromZip extracts binaryName from a .zip archive.
@@ -79,7 +98,7 @@ func extractFromZip(archivePath, binaryName, destPath string) error {
 		defer rc.Close()
 		return writeExtracted(rc, destPath, f.Mode())
 	}
-	return fmt.Errorf("binary %q not found in zip archive", binaryName)
+	return &entryNotFoundError{fmt.Sprintf("binary %q not found in zip archive", binaryName)}
 }
 
 // writeExtracted writes data from r into destPath with the given mode.

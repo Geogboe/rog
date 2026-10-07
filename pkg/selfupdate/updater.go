@@ -3,7 +3,8 @@
 //
 // It handles fetching the latest release, downloading the platform-specific
 // asset, verifying its SHA256 checksum, extracting the binary, and atomically
-// replacing the running executable.
+// replacing the running executable. Optional sidecar files shipped in the
+// archive (see Updater.Sidecars) are installed beside it.
 //
 // Example usage:
 //
@@ -29,6 +30,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // HTTPDoer is the interface satisfied by *http.Client.
@@ -81,6 +83,13 @@ type Updater struct {
 	// /releases/latest, GitHub's default, which excludes prereleases and
 	// drafts). Defaults to false: stable releases only.
 	AllowPrereleaseAndDraft bool
+	// Sidecars are optional files shipped in the archive next to the binary
+	// (for example a DLL the binary loads from its own directory). Each is
+	// extracted from the same checksum-verified archive and installed beside
+	// the executable, replacing any copy there. A name the archive doesn't
+	// contain is skipped, so an update from a release that predates the file
+	// still works. Names must be plain file names with no path components.
+	Sidecars []string
 }
 
 // httpClient returns the configured HTTP client or http.DefaultClient.
@@ -154,11 +163,41 @@ func (u *Updater) Install(ctx context.Context, rel *Release, exePath string) err
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
+	// Sidecars are extracted before the binary is replaced, so a bad archive
+	// can't leave a new binary beside old sidecars.
+	sidecars, err := u.extractSidecars(archivePath, tmpDir)
+	if err != nil {
+		return err
+	}
+
 	if err := atomicReplace(extractedPath, exePath); err != nil {
 		return fmt.Errorf("install binary: %w", err)
 	}
 
+	dir := filepath.Dir(exePath)
+	for _, name := range sidecars {
+		if err := atomicReplace(filepath.Join(tmpDir, name), filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("install %s: %w", name, err)
+		}
+	}
+
 	return nil
+}
+
+// extractSidecars extracts every configured sidecar present in the archive into
+// dir and returns the names it found.
+func (u *Updater) extractSidecars(archivePath, dir string) ([]string, error) {
+	var found []string
+	for _, name := range u.Sidecars {
+		ok, err := extractOptional(archivePath, name, filepath.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("extract %s: %w", name, err)
+		}
+		if ok {
+			found = append(found, name)
+		}
+	}
+	return found, nil
 }
 
 // validate checks that the Updater is configured with required fields.
@@ -171,6 +210,11 @@ func (u *Updater) validate() error {
 	}
 	if u.AssetNamer == nil {
 		return fmt.Errorf("selfupdate: AssetNamer must be set")
+	}
+	for _, name := range u.Sidecars {
+		if name == "" || strings.ContainsAny(name, "/"+string(filepath.Separator)+"\\") || name == "." || name == ".." || name == u.BinaryName {
+			return fmt.Errorf("selfupdate: sidecar %q must be a plain file name other than the binary's", name)
+		}
 	}
 	return nil
 }
