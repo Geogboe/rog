@@ -1,17 +1,21 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/Geogboe/rog/internal/index"
+	"github.com/Geogboe/rog/internal/wsl"
 )
 
-// listPathContext is captured once per table. Listing never starts a worker or distro.
+// listPathContext describes the shell environment owning a path.
 type listPathContext struct{ cwd, home, distro, platform string }
 
 func currentListPathContext() listPathContext {
@@ -21,6 +25,10 @@ func currentListPathContext() listPathContext {
 }
 
 func (c listPathContext) display(repo *index.Repo) string {
+	return c.displayWithForeign(repo, nil)
+}
+
+func (c listPathContext) displayWithForeign(repo *index.Repo, remote *listPathContext) string {
 	p := repo.AbsPath
 	if strings.IndexFunc(p, unicode.IsControl) >= 0 {
 		return "[path contains control characters]"
@@ -42,8 +50,9 @@ func (c listPathContext) display(repo *index.Repo) string {
 		}
 	}
 	if foreign {
-		// A foreign home or cwd cannot be established without starting the distro.
-		// Keep the native absolute path rather than inventing an unsafe shortcut.
+		if remote != nil {
+			p = shortListPath(p, remote.cwd, remote.home, "linux")
+		}
 		return distroLabel(repo.WSLDistro) + ":" + quoteListPath(p, "linux")
 	}
 	return quoteListPath(shortListPath(p, c.cwd, c.home, c.platform), c.platform)
@@ -158,4 +167,64 @@ func quoteListPath(p, platform string) string {
 		return "~/" + "'" + strings.ReplaceAll(p[2:], "'", "'\\''") + "'"
 	}
 	return "'" + strings.ReplaceAll(p, "'", "'\\''") + "'"
+}
+
+// Cache successes and failures for this listing only. Nothing is written to disk.
+type listPathFormatter struct {
+	local    listPathContext
+	lookup   func(context.Context, string) (listPathContext, error)
+	foreign  map[string]*listPathContext
+	deadline time.Time
+}
+
+func newListPathFormatter() *listPathFormatter {
+	return &listPathFormatter{local: currentListPathContext(), lookup: lookupListDistroContext, foreign: map[string]*listPathContext{}}
+}
+
+func (f *listPathFormatter) display(repo *index.Repo) string {
+	if !repo.IsWSL || (f.local.platform != "windows" && repo.WSLDistro == f.local.distro) || repo.WSLDistro == "" {
+		return f.local.display(repo)
+	}
+	remote, known := f.foreign[repo.WSLDistro]
+	if !known {
+		// Bound all distro lookups together, including a failed or slow startup.
+		if f.deadline.IsZero() {
+			f.deadline = time.Now().Add(2 * time.Second)
+		}
+		if time.Now().Before(f.deadline) {
+			ctx, cancel := context.WithDeadline(context.Background(), f.deadline)
+			resolved, err := f.lookup(ctx, repo.WSLDistro)
+			cancel()
+			if err == nil {
+				remote = &resolved
+			}
+		}
+		f.foreign[repo.WSLDistro] = remote
+	}
+	return f.local.displayWithForeign(repo, remote)
+}
+
+func lookupListDistroContext(ctx context.Context, distro string) (listPathContext, error) {
+	// --exec does not load the user's shell profile. WSL supplies the distro's
+	// default user's home and translates the inherited working directory itself.
+	command := wsl.ExecInDistroContext(ctx, distro, "sh", "-c", `printf '%s\000%s\000' "$HOME" "$PWD"`)
+	command.WaitDelay = 100 * time.Millisecond
+	out, err := command.Output()
+	if err != nil {
+		return listPathContext{}, err
+	}
+	return parseListDistroContext(string(out))
+}
+
+func parseListDistroContext(output string) (listPathContext, error) {
+	parts := strings.Split(output, "\x00")
+	if len(parts) != 3 || parts[2] != "" {
+		return listPathContext{}, fmt.Errorf("invalid WSL path context")
+	}
+	for _, p := range parts[:2] {
+		if !strings.HasPrefix(p, "/") || strings.IndexFunc(p, unicode.IsControl) >= 0 {
+			return listPathContext{}, fmt.Errorf("invalid WSL directory")
+		}
+	}
+	return listPathContext{home: parts[0], cwd: parts[1], platform: "linux"}, nil
 }

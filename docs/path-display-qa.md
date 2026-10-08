@@ -10,12 +10,15 @@ Keep POSIX home expansion outside quotes. Never treat a Linux backslash as a
 safe unquoted character. Paths with control characters show a diagnostic rather
 than a modified argument that could navigate to a different directory.
 
-Do not start a WSL distribution or worker during listing. A foreign distro's
-home and initial working directory are not recorded in the index, and its
-mount layout need not use `/mnt/c`. Display its native absolute path with a
-distro prefix instead of guessing either `~` or a relative path. Inside the
-owning distro, ordinary home and relative shortening applies. Normalize WSL
-UNC representations before formatting in either environment.
+For foreign WSL rows, query the distro's default user's home and inherited
+working directory with a non-login shell. This may start that displayed distro,
+but installs no worker and runs no Git commands. WSL translates the Windows
+working directory itself; do not assume a `/mnt/c` mount layout or infer the
+user from `/home/<name>`. Resolve each distro once per listing, sharing results
+across root groups and caching failures in memory. Bound all lookups together
+to two seconds and retain absolute paths when lookup fails or times out.
+Native rows and raw JSON/YAML/path output do not perform this lookup.
+Normalize WSL UNC representations before formatting in either environment.
 
 Never insert line breaks inside a table path. Truncate with an explicit ellipsis
 when necessary, including short, long, and custom-field modes. A truncated path
@@ -45,3 +48,20 @@ normalize UNC paths even when no distro prefix is needed. Focused regressions
 cover that case, separate distro grouping, Windows drive boundaries, home-prefix
 collisions, quoting, and one-line truncation in every table mode. Race tests and
 vet cover the command package; build both native Linux and Windows executables.
+
+## WSL shortening correction
+
+The initial implementation left foreign WSL paths absolute, which did not meet
+the agreed display behavior. Resolve the owning shell context before shortening,
+rather than narrowing the requirement to avoid the lookup. Keep this information
+in memory; do not change the index schema or persist a guessed home directory.
+Regression tests cover custom homes, inherited working directories, quoting,
+home-prefix collisions, per-distro isolation, failed lookups, and an expired
+lookup budget. Raw `path`, `select`, and `list -o path` remain exact paths.
+
+The corrected native Windows check ran from the user's `psu-ssi` directory and
+showed a distro-prefixed home-relative path for the Ubuntu `packer-windows`
+project and `Ubuntu:.` for the inherited working directory. Pasting the displayed
+home-relative argument into `cd` inside Ubuntu resolved the actual project.
+Grouped tables passed too; raw `path`, `select`, and `list -o path` remained
+unchanged, and config/index checks showed no writes.

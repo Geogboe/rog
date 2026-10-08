@@ -58,6 +58,7 @@ Output modes:
   --group-by root: Separate tables by root and environment
   Paths use ~ under home, short nearby relative paths, or absolute paths.
   WSL paths include the distribution when outside the current environment.
+  Table path lookups may start displayed WSL distros; timeout keeps full paths.
   Truncated paths end in …; use rog path <project> for the complete path.
   --fields: Custom fields (comma-separated)
   --output, -o: table, json, yaml, or path
@@ -276,7 +277,7 @@ func outputTable(repos []*index.Repo, short bool, long bool, customFields []stri
 	}
 }
 
-func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, customFields []string, width int, color bool) {
+func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, customFields []string, width int, color bool, shared ...*listPathFormatter) {
 	// Determine which fields to display
 	var fields []string
 	var descMaxLen int
@@ -343,7 +344,10 @@ func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, custo
 			header[i] = strings.ToUpper(field)
 		}
 	}
-	pathContext := currentListPathContext()
+	pathFormatter := newListPathFormatter()
+	if len(shared) > 0 {
+		pathFormatter = shared[0]
+	}
 	rows := make([][]string, 0, len(repos))
 	widths := make([]int, len(fields))
 	for i, heading := range header {
@@ -354,7 +358,7 @@ func writeTable(out io.Writer, repos []*index.Repo, short bool, long bool, custo
 		for i, field := range fields {
 			value := getFieldValue(repo, field, false, descMaxLen)
 			if field == "path" {
-				value = pathContext.display(repo)
+				value = pathFormatter.display(repo)
 			}
 			if len(customFields) == 0 && !short && !long && field == "status" {
 				value = formatCompactStatus(repo)
@@ -641,7 +645,7 @@ func outputYAML(repos []*index.Repo) {
 }
 
 // Groups preserve result order and distinguish roots in separate environments.
-func writeGroupedTable(out io.Writer, repos []*index.Repo, short, long bool, fields []string, width int, color bool) {
+func writeGroupedTable(out io.Writer, repos []*index.Repo, short, long bool, fields []string, width int, color bool, shared ...*listPathFormatter) {
 	type group struct {
 		label string
 		repos []*index.Repo
@@ -664,6 +668,10 @@ func writeGroupedTable(out io.Writer, repos []*index.Repo, short, long bool, fie
 		}
 		groups[i].repos = append(groups[i].repos, repo)
 	}
+	pathFormatter := newListPathFormatter()
+	if len(shared) > 0 {
+		pathFormatter = shared[0]
+	}
 	for i, g := range groups {
 		if i > 0 {
 			fmt.Fprintln(out)
@@ -673,6 +681,6 @@ func writeGroupedTable(out io.Writer, repos []*index.Repo, short, long bool, fie
 			label = ansi.Truncate(label, width, "…")
 		}
 		fmt.Fprintln(out, label)
-		writeTable(out, g.repos, short, long, fields, width, color)
+		writeTable(out, g.repos, short, long, fields, width, color, pathFormatter)
 	}
 }

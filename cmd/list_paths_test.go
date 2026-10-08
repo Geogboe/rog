@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Geogboe/rog/internal/index"
 	"github.com/charmbracelet/x/ansi"
@@ -41,7 +44,10 @@ func TestListNavigationPaths(t *testing.T) {
 func TestListGroupingSeparatesEnvironments(t *testing.T) {
 	var out bytes.Buffer
 	repos := []*index.Repo{{Name: "a", Root: "projects", AbsPath: "/a"}, {Name: "b", Root: "projects", AbsPath: "/b", IsWSL: true, WSLDistro: "Ubuntu"}, {Name: "c", Root: "projects", AbsPath: "/c", IsWSL: true, WSLDistro: "Debian"}}
-	writeGroupedTable(&out, repos, false, false, nil, 80, false)
+	formatter := &listPathFormatter{local: listPathContext{platform: "windows"}, foreign: map[string]*listPathContext{}, lookup: func(context.Context, string) (listPathContext, error) {
+		return listPathContext{}, errors.New("unavailable")
+	}}
+	writeGroupedTable(&out, repos, false, false, nil, 80, false, formatter)
 	for _, label := range []string{"projects · local", "projects · WSL Ubuntu", "projects · WSL Debian"} {
 		require.Contains(t, out.String(), label)
 	}
@@ -60,4 +66,50 @@ func TestListAllModesKeepPathsOnOneLine(t *testing.T) {
 		require.Contains(t, lines[1], "…")
 		require.LessOrEqual(t, ansi.StringWidth(lines[1]), 80)
 	}
+}
+
+func TestForeignWSLPathsUseTheirOwnShellContext(t *testing.T) {
+	calls := map[string]int{}
+	formatter := &listPathFormatter{local: listPathContext{cwd: `C:\work`, home: `C:\Users\test`, platform: "windows"}, foreign: map[string]*listPathContext{}, lookup: func(ctx context.Context, distro string) (listPathContext, error) {
+		calls[distro]++
+		require.NoError(t, ctx.Err())
+		if distro == "Missing" {
+			return listPathContext{}, errors.New("unavailable")
+		}
+		home := "/home/ubuntu-user"
+		if distro == "Debian" {
+			home = "/srv/debian-user"
+		}
+		return listPathContext{home: home, cwd: "/srv/work/one", platform: "linux"}, nil
+	}}
+	for _, tt := range []struct{ distro, path, want string }{
+		{"Ubuntu", `\\wsl$\Ubuntu\home\ubuntu-user\projects\tool`, "Ubuntu:~/projects/tool"},
+		{"Ubuntu", "/srv/work/two", "Ubuntu:../two"},
+		{"Ubuntu", "/home/ubuntu-user/my tool", "Ubuntu:~/'my tool'"},
+		{"Ubuntu", "/home/ubuntu-user-other/tool", "Ubuntu:/home/ubuntu-user-other/tool"},
+		{"Debian", "/srv/debian-user/tool", "Debian:~/tool"},
+		{"Missing", "/home/ubuntu-user/tool", "Missing:/home/ubuntu-user/tool"},
+		{"Missing", "/srv/work/two", "Missing:/srv/work/two"},
+	} {
+		require.Equal(t, tt.want, formatter.display(&index.Repo{AbsPath: tt.path, IsWSL: true, WSLDistro: tt.distro}))
+	}
+	require.Equal(t, map[string]int{"Ubuntu": 1, "Debian": 1, "Missing": 1}, calls)
+	// Native rows and machine output never resolve a distribution.
+	require.Equal(t, "~/tool", formatter.display(&index.Repo{AbsPath: `C:\Users\test\tool`}))
+}
+
+func TestWSLContextLookupIsBoundedAndValidated(t *testing.T) {
+	for _, output := range []string{"", "/home/a\x00relative\x00", "/home/a\ninvalid\x00/work\x00", "/home/a\x00/work\x00extra"} {
+		_, err := parseListDistroContext(output)
+		require.Error(t, err)
+	}
+	ctx, err := parseListDistroContext("/srv/user home\x00/mount/work\x00")
+	require.NoError(t, err)
+	require.Equal(t, "/srv/user home", ctx.home)
+	require.Equal(t, "/mount/work", ctx.cwd)
+	formatter := &listPathFormatter{local: listPathContext{platform: "windows"}, foreign: map[string]*listPathContext{}, deadline: time.Now().Add(-time.Second), lookup: func(context.Context, string) (listPathContext, error) {
+		t.Fatal("expired lookup must not start WSL")
+		return listPathContext{}, nil
+	}}
+	require.Equal(t, "Ubuntu:/home/a/tool", formatter.display(&index.Repo{AbsPath: "/home/a/tool", IsWSL: true, WSLDistro: "Ubuntu"}))
 }

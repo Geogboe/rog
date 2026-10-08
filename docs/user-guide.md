@@ -207,8 +207,11 @@ rog list -o path
   path when shorter (at most two parent directories), or an absolute path.
   Paths containing shell metacharacters are quoted for POSIX shells on Linux
   and PowerShell on Windows. Foreign WSL paths include `Distro:`; copy the
-  portion after the colon into `cd` inside that distro. Rog does not start WSL
-  to look up a foreign home or working directory, so those paths remain absolute.
+  portion after the colon into `cd` inside that distro. Rog queries each displayed distro once for its home and initial working
+  directory, so a Windows listing can show `Ubuntu:~/projects/tool` or
+  `Ubuntu:../tool`. This may start that distro. All lookups share a two-second
+  timeout; unavailable distros retain absolute paths. No worker is installed,
+  no Git command runs, and no config or index is written for this lookup.
 
 The default table uses color on supported terminals. `NO_COLOR` disables it, and
 redirected output has no color codes. Narrow terminals show fewer columns;
